@@ -208,10 +208,177 @@ k8sEventsIndexTemplate='
   }
 }'
 
+# Template for indices which hold audit records.
+#
+# Applied on every install, including ones that never enable audit collection: an
+# audit-logs-* index created before its template gets dynamic mappings and answers
+# nothing, and shaping the destination afterwards does not repair the indices already
+# written. Against an index pattern that matches nothing, this costs nothing.
+#
+# The field set is the published audit record. It is authoritative in
+# internal/server/middleware/audit/types.go in openchoreo/openchoreo, not here - under
+# "dynamic": "false" a field missing from this list is stored but unindexed, so it
+# silently stops being filterable.
+#
+# actor.entitlements is a map whose keys vary by subject kind - groups for a user, sub
+# for a service account - so the keys cannot be declared ahead of time. The map is left
+# dynamic and each claim is copied into actor.entitlement_values, which is what both the
+# filter and the value picker read: a caller filters on an entitlement without having to
+# know which claim carries it.
+auditLogsIndexTemplate='
+{
+  "index_patterns": [
+    "audit-logs-*"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "dynamic": "false",
+      "dynamic_templates": [
+        {
+          "entitlement_claims_as_keywords": {
+            "path_match": "actor.entitlements.*",
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 256,
+              "copy_to": "actor.entitlement_values"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "event_time": {
+          "type": "date"
+        },
+        "schema_version": {
+          "type": "keyword"
+        },
+        "event_id": {
+          "type": "keyword"
+        },
+        "action": {
+          "type": "keyword"
+        },
+        "category": {
+          "type": "keyword"
+        },
+        "result": {
+          "type": "keyword"
+        },
+        "request_id": {
+          "type": "keyword"
+        },
+        "source_ip": {
+          "type": "keyword"
+        },
+        "user_agent": {
+          "type": "keyword"
+        },
+        "producer": {
+          "type": "keyword"
+        },
+        "surface": {
+          "type": "keyword"
+        },
+        "operation_id": {
+          "type": "keyword"
+        },
+        "actor": {
+          "properties": {
+            "type": {
+              "type": "keyword"
+            },
+            "id": {
+              "type": "keyword"
+            },
+            "issuer": {
+              "type": "keyword"
+            },
+            "session_id": {
+              "type": "keyword"
+            },
+            "entitlements": {
+              "type": "object",
+              "dynamic": true
+            },
+            "entitlement_values": {
+              "type": "keyword"
+            }
+          }
+        },
+        "http": {
+          "properties": {
+            "method": {
+              "type": "keyword"
+            },
+            "path": {
+              "type": "keyword"
+            }
+          }
+        },
+        "resource": {
+          "properties": {
+            "type": {
+              "type": "keyword"
+            },
+            "namespace": {
+              "type": "keyword"
+            },
+            "environment": {
+              "type": "keyword"
+            },
+            "project": {
+              "type": "keyword"
+            },
+            "component": {
+              "type": "keyword"
+            },
+            "resource": {
+              "type": "keyword"
+            },
+            "uid": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "kubernetes": {
+          "properties": {
+            "namespace_name": {
+              "type": "keyword"
+            },
+            "pod_name": {
+              "type": "keyword"
+            },
+            "container_name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "openchoreo_cluster_instance": {
+          "type": "keyword"
+        },
+        "log": {
+          "type": "wildcard"
+        }
+      }
+    }
+  }
+}'
+
 # The following array holds pairs of index template names and their definitions. Define more templates above
 # and add them to this array.
 # Format: (templateName1 templateDefinition1 templateName2 templateDefinition2 ...)
-indexTemplates=("container-logs" "containerLogsIndexTemplate" "k8s-events" "k8sEventsIndexTemplate")
+indexTemplates=("container-logs" "containerLogsIndexTemplate" "k8s-events" "k8sEventsIndexTemplate" "audit-logs" "auditLogsIndexTemplate")
 
 # Create index templates through a loop using the above array
 echo "Creating index templates..."
@@ -322,6 +489,10 @@ echo -e "\nManaging ISM Policies..."
 # Read retention periods from environment variables or use defaults
 containerLogsRetention="${CONTAINER_LOGS_MIN_INDEX_AGE:-30d}"
 k8sEventsRetention="${K8S_EVENTS_MIN_INDEX_AGE:-30d}"
+# Audit records are kept far longer than operational logs. Needing a different
+# retention is the reason they are a separate stream rather than a filter over the
+# container logs, so this default is not expected to match the two above.
+auditLogsRetention="${AUDIT_LOGS_MIN_INDEX_AGE:-365d}"
 
 # container logs
 containerLogsIsmPolicy='{
@@ -397,9 +568,46 @@ k8sEventsIsmPolicy='{
   }
 }'
 
+# audit logs
+auditLogsIsmPolicy='{
+  "policy": {
+    "description": "Delete audit logs older than '"$auditLogsRetention"'",
+    "default_state": "active",
+    "states": [
+      {
+        "name": "active",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "'"$auditLogsRetention"'"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["audit-logs-*"],
+        "priority": 100
+      }
+    ]
+  }
+}'
+
 # Array to hold policy names and their definitions
 # Format: (ismPolicyName1 ismPolicyDefinition1 ismPolicyName2 ismPolicyDefinition2 ...)
-ismPolicies=("container-logs" "containerLogsIsmPolicy" "k8s-events" "k8sEventsIsmPolicy")
+ismPolicies=("container-logs" "containerLogsIsmPolicy" "k8s-events" "k8sEventsIsmPolicy" "audit-logs" "auditLogsIsmPolicy")
 
 # Function to normalize JSON for comparison (removes whitespace differences)
 normalize_json() {

@@ -179,6 +179,120 @@ helm upgrade --install observability-logs-opensearch \
 > - `fluent-bit.openSearchHost` and `fluent-bit.openSearchVHost` should match the TLS passthrough hostname on the obs gateway.
 > - `fluent-bit.openSearchPort` should match the passthrough listener port (commonly `11443` if the obs gateway uses non-standard ports).
 > - The adapter and setup job are disabled because they only need to run on the observability plane cluster.
+> - On the **control plane** cluster, add `--set auditLogs.enabled=true` to also collect the audit trail. See [Enable audit log collection](#enable-audit-log-collection).
+
+## Enable audit log collection
+
+OpenChoreo's audit trail — who did what, from where, and whether it was allowed — is
+written by `openchoreo-api` and `observer` to their container logs. This module can route
+those records to an index of their own, `audit-logs-*`, so they are kept under their own
+retention rather than expiring with operational logs.
+
+Enable it alongside Fluent Bit:
+
+```bash
+helm upgrade observability-logs-opensearch \
+  oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch \
+  --create-namespace \
+  --namespace openchoreo-observability-plane \
+  --version 0.5.3 \
+  --reuse-values \
+  --set fluent-bit.enabled=true \
+  --set fluent-bit.clusterInstance=singleCluster \
+  --set auditLogs.enabled=true
+```
+
+Audit records are produced by the control plane and the observability plane. In a
+multi-cluster topology, Fluent Bit must therefore be running — and `auditLogs.enabled`
+set — in the cluster hosting `openchoreo-api` and `observer`, which is not necessarily
+the cluster hosting OpenSearch. See [Multi-cluster topology](#multi-cluster-topology) for
+how to point a remote Fluent Bit at the observability plane.
+
+### Trusted producers
+
+`auditLogs.producers` is an allowlist, and it is a security boundary rather than ordinary
+configuration. **Each entry grants a workload the right to write into the audit trail.**
+
+```yaml
+auditLogs:
+  producers:
+    - producer: openchoreo-api
+      namespace: openchoreo-control-plane
+      container: api-server
+    - producer: observer
+      namespace: openchoreo-observability-plane
+      container: observer
+```
+
+Each entry becomes one Fluent Bit rule that matches on the container log **filename**,
+which the kubelet writes — not on anything in the log line. This is what makes the trail
+trustworthy: a workload that prints
+
+```json
+{"level":"INFO","msg":"AUDIT-LOG","producer":"openchoreo-api","action":"delete_project","result":"success"}
+```
+
+to its stdout produces a line that looks exactly like a real audit record, and it still
+lands in `container-logs-*` and never in the audit index, because its pod is not in the
+allowlist. Widening the list removes that guarantee for the workload you add.
+
+Two consequences worth knowing before you change it:
+
+- **The defaults assume the default release namespaces.** If you install the control
+  plane or the observability plane into different namespaces, edit these entries — or
+  audit collection silently stops. Nothing errors; the index simply stays empty.
+- The `container` values are container names, not deployment names. The API server's
+  container is `api-server`, not `openchoreo-api`.
+
+### Configuring the audit destination
+
+| Value | Default | Purpose |
+| ----- | ------- | ------- |
+| `auditLogs.enabled` | `false` | Route audit records to their own index |
+| `auditLogs.indexPrefix` | `audit-logs-` | Index name prefix; daily indices are `audit-logs-YYYY-MM-DD` |
+| `auditLogs.producers` | the two above | The trusted-producer allowlist |
+
+The index template and retention policy are applied on **every** install, whether or not
+`auditLogs.enabled` is set. This is deliberate: an index created before its template gets
+dynamic mappings and answers nothing, and applying the template afterwards does not
+repair indices already written. Until audit is enabled they are metadata against an index
+pattern that matches nothing.
+
+### Retention
+
+```bash
+--set openSearchSetup.dataRetentionTime.auditLogs=365d
+```
+
+Audit defaults to **365 days**, against 30 for container logs and Kubernetes events.
+Needing a different retention is the reason audit is a separate stream rather than a
+filter over the container logs, so the two are not expected to match. Changing the value
+and upgrading reconciles the policy onto the indices that already exist.
+
+### Credentials
+
+Audit uses the same OpenSearch credentials as container logs — the
+`opensearch-admin-credentials` secret from [Pre-requisites](#pre-requisites). There is
+currently no separate credential or access control for the audit index: anyone who can
+read `container-logs-*` from OpenSearch directly can read `audit-logs-*` too. Access
+control through OpenChoreo is enforced by the Observer, which gates the audit read on its
+own permission.
+
+### What the stored records look like
+
+Two points that will otherwise cost you a wrong query:
+
+- **`@timestamp` and `event_time` are different times.** `@timestamp` is when the
+  collector read the line and is what picks the daily index; `event_time` is when the
+  audited request was received, and is what the audit API filters and sorts on. They
+  normally differ by milliseconds, and by much more if collection was backed up.
+- **`resource.environment` is dual-scoped**, stored as `{namespace}/{name}` — recorded
+  exactly as authorization evaluated it. A filter on the bare environment name matches
+  nothing. Its sibling fields (`resource.namespace`, `resource.project`,
+  `resource.component`) are bare names.
+
+`metadata` and `resource.metadata` are open maps with no fixed shape. They are stored and
+returned, but not indexed, so they cannot be filtered on.
 
 ## Troubleshooting
 
@@ -192,6 +306,46 @@ kubectl exec -n openchoreo-observability-plane opensearch-master-0 \
 ```
 
 Only logs written after the deletion will appear (Fluent Bit's tail cursor persists at `/var/lib/fluent-bit/db/tail-container-logs.db`). Generate fresh traffic, or remove that DB and restart the DaemonSet to backfill.
+
+### Audit queries return nothing, but the index is filling
+
+Same cause as above, and the same fix with the audit pattern: an `audit-logs-*` index
+created before `openSearchSetup` applied its template carries dynamic mappings instead of
+the declared ones, so filters match nothing.
+
+```bash
+kubectl exec -n openchoreo-observability-plane opensearch-master-0 \
+  -- curl -ksu admin:<password> -X DELETE 'https://localhost:9200/audit-logs-*'
+```
+
+**Deleting an audit index destroys audit records.** Unlike container logs, they are not
+regenerated by fresh traffic — only new activity is recorded. Confirm the index really is
+mis-mapped before deleting it, by checking that the mapping declares the audit fields:
+
+```bash
+kubectl exec -n openchoreo-observability-plane opensearch-master-0 \
+  -- curl -ksu admin:<password> 'https://localhost:9200/audit-logs-*/_mapping?pretty'
+```
+
+### No audit records are collected at all
+
+The index stays empty and nothing errors. In order of likelihood:
+
+1. `auditLogs.enabled` is not set in the cluster where `openchoreo-api` and `observer`
+   run. In a multi-cluster install this is the control plane cluster, not the one running
+   OpenSearch.
+2. The control plane or observability plane is installed into a non-default namespace, so
+   no `auditLogs.producers` entry matches. Compare the entries against the pods'
+   **namespace** and **container** names.
+3. Audit publishing is disabled on the producer itself. That is configured in the
+   OpenChoreo control plane and observability plane charts, not here.
+
+Check what the collector is doing — the audit rules appear as their own emitters:
+
+```bash
+kubectl exec -n openchoreo-observability-plane ds/fluent-bit \
+  -- curl -s localhost:2020/api/v1/metrics | grep audit_emitter
+```
 
 ## Dependencies
 

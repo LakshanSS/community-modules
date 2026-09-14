@@ -102,6 +102,37 @@ fluent-bit:
   # Name of the cluster these records were collected from. REQUIRED
   clusterInstance: ""
 
+auditLogs:
+  # Route OpenChoreo audit records to their own index, with their own retention,
+  # instead of leaving them in the container logs. Requires fluent-bit to be
+  # running in the cluster where openchoreo-api and observer run.
+  #
+  # Only the routing is gated on this. The index template and retention policy are
+  # applied on every install, so the destination is shaped before the first record
+  # can arrive — an audit-logs-* index created ahead of its template gets dynamic
+  # mappings and returns nothing. Both are metadata against an index pattern that
+  # matches nothing until audit is enabled, so the cost of applying them always is
+  # zero.
+  enabled: false
+
+  # Index name prefix. The adapter reads the same value, so the two cannot drift.
+  indexPrefix: "audit-logs-"
+
+  # The source allowlist. Each entry becomes one rewrite_tag rule matched on the
+  # container log filename, which the kubelet writes — so it cannot be satisfied by
+  # anything a pod puts in its own log line.
+  #
+  # Adding an entry grants a workload the right to write into the audit trail.
+  # Review it as such. The defaults are OpenChoreo's own two producers; a non-default
+  # release namespace requires editing them or audit collection silently stops.
+  producers:
+    - producer: openchoreo-api
+      namespace: openchoreo-control-plane
+      container: api-server
+    - producer: observer
+      namespace: openchoreo-observability-plane
+      container: observer
+
 openSearch:
   enabled: true
 
@@ -224,3 +255,7 @@ openSearchSetup:
   dataRetentionTime:
     containerLogs: "30d"
     k8sEvents: "30d"
+    # Audit records are a compliance record rather than an operational one, so they
+    # are kept far longer than the two above. Applied whether or not audit collection
+    # is enabled, against an index pattern that matches nothing until it is.
+    auditLogs: "365d"

@@ -21,11 +21,13 @@ import (
 
 // LogsHandler implements the generated StrictServerInterface.
 type LogsHandler struct {
-	osClient           *opensearch.Client
-	queryBuilder       *opensearch.QueryBuilder
-	eventsQueryBuilder *opensearch.QueryBuilder
-	observerClient     *observer.Client
-	logger             *slog.Logger
+	osClient             *opensearch.Client
+	queryBuilder         *opensearch.QueryBuilder
+	eventsQueryBuilder   *opensearch.QueryBuilder
+	auditQueryBuilder    *opensearch.QueryBuilder
+	auditCursorKeepAlive time.Duration
+	observerClient       *observer.Client
+	logger               *slog.Logger
 }
 
 // NewLogsHandler creates a new LogsHandler.
@@ -33,15 +35,19 @@ func NewLogsHandler(
 	osClient *opensearch.Client,
 	queryBuilder *opensearch.QueryBuilder,
 	eventsQueryBuilder *opensearch.QueryBuilder,
+	auditQueryBuilder *opensearch.QueryBuilder,
+	auditCursorKeepAlive time.Duration,
 	observerClient *observer.Client,
 	logger *slog.Logger,
 ) *LogsHandler {
 	return &LogsHandler{
-		osClient:           osClient,
-		queryBuilder:       queryBuilder,
-		eventsQueryBuilder: eventsQueryBuilder,
-		observerClient:     observerClient,
-		logger:             logger,
+		osClient:             osClient,
+		queryBuilder:         queryBuilder,
+		eventsQueryBuilder:   eventsQueryBuilder,
+		auditQueryBuilder:    auditQueryBuilder,
+		auditCursorKeepAlive: auditCursorKeepAlive,
+		observerClient:       observerClient,
+		logger:               logger,
 	}
 }
 
@@ -665,7 +671,7 @@ func (h *LogsHandler) HandleAlertWebhook(_ context.Context, request gen.HandleAl
 		h.logger.Warn("Alert webhook received with nil body")
 		return gen.HandleAlertWebhook200JSONResponse{
 			Message: ptr("alert webhook received successfully"),
-			Status:  ptr(gen.Success),
+			Status:  ptr(gen.AlertWebhookResponseStatusSuccess),
 		}, nil
 	}
 	body := *request.Body
@@ -675,7 +681,7 @@ func (h *LogsHandler) HandleAlertWebhook(_ context.Context, request gen.HandleAl
 		h.logger.Error("Failed to parse alert webhook body", slog.Any("error", err))
 		return gen.HandleAlertWebhook200JSONResponse{
 			Message: ptr("alert webhook received successfully"),
-			Status:  ptr(gen.Success),
+			Status:  ptr(gen.AlertWebhookResponseStatusSuccess),
 		}, nil
 	}
 
@@ -692,7 +698,7 @@ func (h *LogsHandler) HandleAlertWebhook(_ context.Context, request gen.HandleAl
 
 	return gen.HandleAlertWebhook200JSONResponse{
 		Message: ptr("alert webhook received successfully"),
-		Status:  ptr(gen.Success),
+		Status:  ptr(gen.AlertWebhookResponseStatusSuccess),
 	}, nil
 }
 

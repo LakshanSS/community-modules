@@ -56,12 +56,12 @@ func platformHandler(t *testing.T, serverURL string) *LogsHandler {
 	return NewLogsHandler(
 		newTestOSClient(t, serverURL),
 		osearch.NewQueryBuilder("container-logs-"),
-		nil, nil, testLogger(),
+		nil, nil, 0, nil, testLogger(),
 	)
 }
 
 func TestQueryPlatformLogs_NilBody(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, testLogger())
+	handler := NewLogsHandler(nil, nil, nil, nil, 0, nil, testLogger())
 
 	resp, err := handler.QueryPlatformLogs(context.Background(), gen.QueryPlatformLogsRequestObject{Body: nil})
 	if err != nil {

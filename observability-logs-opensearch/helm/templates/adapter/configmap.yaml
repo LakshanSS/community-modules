@@ -14,5 +14,8 @@ data:
   OPENSEARCH_ADDRESS: "https://opensearch:9200"
   OPENSEARCH_INDEX_PREFIX: "container-logs-"
   OPENSEARCH_EVENTS_INDEX_PREFIX: "k8s-events-"
+  # Rendered from the same value the collector's Logstash_Prefix is, so the adapter
+  # cannot end up reading an index nothing writes to.
+  OPENSEARCH_AUDIT_INDEX_PREFIX: {{ .Values.auditLogs.indexPrefix | quote }}
   OBSERVER_URL: {{ .Values.adapter.observerUrl | quote }}
 {{- end }}
