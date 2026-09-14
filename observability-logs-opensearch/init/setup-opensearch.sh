@@ -86,44 +86,7 @@ containerLogsIndexTemplate='
               "type": "keyword"
             },
             "labels": {
-              "properties": {
-                "build-name": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/component": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/component-uid": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/environment": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/environment-uid": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/namespace": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/project": {
-                  "type": "keyword"
-                },
-                "openchoreo_dev/project-uid": {
-                  "type": "keyword"
-                },
-                "target": {
-                  "type": "keyword"
-                },
-                "uuid": {
-                  "type": "keyword"
-                },
-                "version": {
-                  "type": "keyword"
-                },
-                "version_id": {
-                  "type": "keyword"
-                }
-              }
+              "type": "flat_object"
             },
             "namespace_name": {
               "type": "keyword"
@@ -135,6 +98,9 @@ containerLogsIndexTemplate='
         },
         "log": {
           "type": "wildcard"
+        },
+        "openchoreo_cluster_instance": {
+          "type": "keyword"
         }
       }
     }
