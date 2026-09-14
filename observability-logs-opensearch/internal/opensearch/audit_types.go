@@ -9,11 +9,8 @@ import (
 	"time"
 )
 
-// AuditRecord is one stored audit event, in the field names it was published with.
-//
-// The json tags are the record's own snake_case spelling, so a document read back out
-// of OpenSearch unmarshals into this directly and a field rename upstream surfaces as
-// an empty value here rather than being absorbed by a translation table.
+// AuditRecord is one stored audit event. The json tags are the record's own
+// snake_case spelling, so a stored document unmarshals into this directly.
 type AuditRecord struct {
 	SchemaVersion string         `json:"schema_version"`
 	EventID       string         `json:"event_id"`
@@ -32,14 +29,12 @@ type AuditRecord struct {
 	Resource      *AuditResource `json:"resource"`
 	Metadata      map[string]any `json:"metadata"`
 
-	// Log is the raw line the collector ingested, retained alongside the parsed
-	// fields by the collector's Preserve_Key. It is the ground truth a parsing
-	// discrepancy is settled against.
-	Log string `json:"log"`
+	// The stored document also carries the raw ingested line in `log`. The contract
+	// does not return it, but searchPhrase matches against it, so the index mapping
+	// and the collector's Preserve_Key are not dead weight.
 
-	// Kubernetes and ClusterInstance are stamped by the collector rather than by the
-	// emitting service, which is what makes them worth comparing against the
-	// record's own producer claim.
+	// Stamped by the collector rather than the emitting service, so they are worth
+	// comparing against the record's own producer claim.
 	Kubernetes      AuditCollectorInfo `json:"kubernetes"`
 	ClusterInstance string             `json:"openchoreo_cluster_instance"`
 }
@@ -102,12 +97,9 @@ type AuditTimelineBucket struct {
 	Counts    map[string]int64
 }
 
-// ParseAuditRecord reads a search hit into an audit record.
-//
-// Returns an error rather than a zero-valued record when the document does not parse:
-// an audit record with a blank actor or a zero event time reads as a real reading of
-// "nobody, at the epoch", which is a worse answer than saying the document is
-// unreadable.
+// ParseAuditRecord reads a search hit into an audit record, erroring rather than
+// returning a zero-valued one: a blank actor at the epoch reads as a real finding of
+// "nobody, at no time".
 func ParseAuditRecord(hit Hit) (AuditRecord, error) {
 	raw, err := json.Marshal(hit.Source)
 	if err != nil {
@@ -119,8 +111,8 @@ func ParseAuditRecord(hit Hit) (AuditRecord, error) {
 		return AuditRecord{}, fmt.Errorf("failed to parse document: %w", err)
 	}
 
-	// The contract requires these on every record, and this module owns that
-	// guarantee. A document missing them was not written by an audit producer.
+	// Required on every record, so a document missing them was not written by an
+	// audit producer.
 	if record.EventID == "" {
 		return AuditRecord{}, fmt.Errorf("document has no event_id")
 	}

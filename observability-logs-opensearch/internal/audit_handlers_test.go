@@ -22,13 +22,12 @@ var (
 	auditEnd   = time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC)
 )
 
-// auditServer stands in for OpenSearch. It answers the point-in-time create with a
-// fixed id, records the search body it was sent, and returns the given payload.
+// auditServer stands in for OpenSearch, recording the search body and path it was sent
+// and returning the given payload.
 type auditServer struct {
 	*httptest.Server
 	searchBody map[string]interface{}
 	searchPath string
-	pitPath    string
 }
 
 func newAuditServer(t *testing.T, payload map[string]interface{}) *auditServer {
@@ -36,13 +35,6 @@ func newAuditServer(t *testing.T, payload map[string]interface{}) *auditServer {
 	srv := &auditServer{}
 	srv.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		if strings.Contains(r.URL.Path, "point_in_time") {
-			srv.pitPath = r.URL.Path
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{"pit_id": "pit-1"})
-			return
-		}
 		srv.searchPath = r.URL.Path
 
 		body, err := io.ReadAll(r.Body)
@@ -62,24 +54,22 @@ func newAuditServer(t *testing.T, payload map[string]interface{}) *auditServer {
 }
 
 // auditSearchPayload builds a search response carrying the given hits.
-func auditSearchPayload(hits []map[string]interface{}, total int, relation string) map[string]interface{} {
+func auditSearchPayload(hits []map[string]interface{}, total int) map[string]interface{} {
 	return map[string]interface{}{
 		"took":      3,
 		"timed_out": false,
-		"pit_id":    "pit-1",
 		"hits": map[string]interface{}{
-			"total": map[string]interface{}{"value": total, "relation": relation},
+			"total": map[string]interface{}{"value": total, "relation": "eq"},
 			"hits":  hits,
 		},
 	}
 }
 
 // auditHit builds one stored audit document.
-func auditHit(id, eventTime string, sortValues []interface{}) map[string]interface{} {
+func auditHit(id, eventTime string) map[string]interface{} {
 	return map[string]interface{}{
 		"_id":    id,
 		"_score": 1.0,
-		"sort":   sortValues,
 		"_source": map[string]interface{}{
 			"schema_version": "1.0",
 			"event_id":       id,
@@ -109,7 +99,6 @@ func auditHandler(t *testing.T, serverURL string) *LogsHandler {
 		newTestOSClient(t, serverURL),
 		nil, nil,
 		osearch.NewQueryBuilder("audit-logs-"),
-		time.Minute,
 		nil,
 		testLogger(),
 	)
@@ -120,7 +109,7 @@ func auditRequestBody() *gen.AuditLogsQueryRequest {
 }
 
 func TestQueryAuditLogs_NilBody(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, 0, nil, testLogger())
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 
 	resp, err := handler.QueryAuditLogs(context.Background(), gen.QueryAuditLogsRequestObject{Body: nil})
 	if err != nil {
@@ -132,7 +121,7 @@ func TestQueryAuditLogs_NilBody(t *testing.T) {
 }
 
 func TestQueryAuditLogs_RejectsAnInvertedWindow(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, 0, nil, testLogger())
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 
 	resp, err := handler.QueryAuditLogs(context.Background(), gen.QueryAuditLogsRequestObject{
 		Body: &gen.AuditLogsQueryRequest{StartTime: auditEnd, EndTime: auditStart},
@@ -147,8 +136,8 @@ func TestQueryAuditLogs_RejectsAnInvertedWindow(t *testing.T) {
 
 func TestQueryAuditLogs_ReturnsRecordsAndCollectorInfo(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
-		auditHit("evt-1", "2026-09-01T10:00:00Z", []interface{}{"2026-09-01T10:00:00Z", "evt-1"}),
-	}, 1, "eq"))
+		auditHit("evt-1", "2026-09-01T10:00:00Z"),
+	}, 1))
 	defer server.Close()
 
 	resp, err := auditHandler(t, server.URL).QueryAuditLogs(
@@ -175,13 +164,6 @@ func TestQueryAuditLogs_ReturnsRecordsAndCollectorInfo(t *testing.T) {
 		*record.Collector.ContainerName != "api-server" {
 		t.Errorf("collector = %+v, want container api-server", record.Collector)
 	}
-	// The raw line is the ground truth a parsing discrepancy is settled against.
-	if record.Log == nil || *record.Log == "" {
-		t.Error("record carries no raw log line")
-	}
-	if success.TotalRelation != "eq" {
-		t.Errorf("totalRelation = %q, want eq", success.TotalRelation)
-	}
 }
 
 // A record that does not parse is skipped rather than emitted zero-valued: a blank
@@ -189,8 +171,8 @@ func TestQueryAuditLogs_ReturnsRecordsAndCollectorInfo(t *testing.T) {
 func TestQueryAuditLogs_SkipsMalformedDocuments(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
 		{"_id": "bad", "_score": 1.0, "_source": map[string]interface{}{"action": "create_project"}},
-		auditHit("evt-1", "2026-09-01T10:00:00Z", []interface{}{"2026-09-01T10:00:00Z", "evt-1"}),
-	}, 2, "eq"))
+		auditHit("evt-1", "2026-09-01T10:00:00Z"),
+	}, 2))
 	defer server.Close()
 
 	resp, err := auditHandler(t, server.URL).QueryAuditLogs(
@@ -205,15 +187,11 @@ func TestQueryAuditLogs_SkipsMalformedDocuments(t *testing.T) {
 	}
 }
 
-// A capped count reported as exact would tell an audit consumer that less happened
-// than did. The backend's own relation is passed through.
-//
-// The gte payload here is the shape OpenSearch really sends once matches exceed the
-// track_total_hits bound: {value: <bound>, relation: "gte"}.
-func TestQueryAuditLogs_PassesThroughACappedCount(t *testing.T) {
+// total is the count across the whole window, not the size of the returned page.
+func TestQueryAuditLogs_TotalIsTheWindowCountNotThePageSize(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
-		auditHit("evt-1", "2026-09-01T10:00:00Z", []interface{}{"2026-09-01T10:00:00Z", "evt-1"}),
-	}, 10000, "gte"))
+		auditHit("evt-1", "2026-09-01T10:00:00Z"),
+	}, 4213))
 	defer server.Close()
 
 	resp, err := auditHandler(t, server.URL).QueryAuditLogs(
@@ -223,20 +201,18 @@ func TestQueryAuditLogs_PassesThroughACappedCount(t *testing.T) {
 	}
 
 	success := resp.(gen.QueryAuditLogs200JSONResponse)
-	if success.TotalRelation != "gte" {
-		t.Errorf("totalRelation = %q, want gte", success.TotalRelation)
+	if success.Total != 4213 {
+		t.Errorf("total = %d, want the whole-window count", success.Total)
 	}
-	if success.Total != 10000 {
-		t.Errorf("total = %d, want the bound the backend stopped at", success.Total)
+	if len(success.Records) != 1 {
+		t.Errorf("records = %d, want the page that was returned", len(success.Records))
 	}
 }
 
-// track_total_hits must be a bound, not true. With true the backend counts every match
-// and always answers relation eq, so a capped count could never be reported - and an
-// unbounded count on a year-deep index is the cost the wildcard pattern exists to
-// avoid.
-func TestQueryAuditLogs_BoundsTheTotalCount(t *testing.T) {
-	server := newAuditServer(t, auditSearchPayload(nil, 0, "eq"))
+// The contract specifies total as exact and gives no way to mark a count truncated,
+// so counting must not stop at OpenSearch's default 10000 cap.
+func TestQueryAuditLogs_CountsMatchesFully(t *testing.T) {
+	server := newAuditServer(t, auditSearchPayload(nil, 0))
 	defer server.Close()
 
 	if _, err := auditHandler(t, server.URL).QueryAuditLogs(
@@ -244,115 +220,29 @@ func TestQueryAuditLogs_BoundsTheTotalCount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	got, ok := server.searchBody["track_total_hits"]
-	if !ok {
-		t.Fatal("query does not set track_total_hits")
-	}
-	if got == true {
-		t.Fatal("track_total_hits is true; it must be a bound so a capped count reports gte")
-	}
-	if got != float64(10000) {
-		t.Errorf("track_total_hits = %v, want 10000", got)
+	if got := server.searchBody["track_total_hits"]; got != true {
+		t.Errorf("track_total_hits = %v, want true so total is exact", got)
 	}
 }
 
-// Absence of nextCursor is the only end-of-results signal, so a short page must not
-// carry one: a caller would otherwise fetch an empty page to discover the end.
-func TestQueryAuditLogs_OmitsCursorOnAShortPage(t *testing.T) {
-	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
-		auditHit("evt-1", "2026-09-01T10:00:00Z", []interface{}{"2026-09-01T10:00:00Z", "evt-1"}),
-	}, 1, "eq"))
+// The audit records live in their own index, not the container logs, and the pattern
+// is a wildcard rather than a day-walked list of names.
+func TestQueryAuditLogs_SearchesTheAuditWildcard(t *testing.T) {
+	server := newAuditServer(t, auditSearchPayload(nil, 0))
 	defer server.Close()
 
-	limit := 10
-	body := auditRequestBody()
-	body.Limit = &limit
-
-	resp, err := auditHandler(t, server.URL).QueryAuditLogs(
-		context.Background(), gen.QueryAuditLogsRequestObject{Body: body})
-	if err != nil {
+	if _, err := auditHandler(t, server.URL).QueryAuditLogs(
+		context.Background(), gen.QueryAuditLogsRequestObject{Body: auditRequestBody()}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	success := resp.(gen.QueryAuditLogs200JSONResponse)
-	if success.NextCursor != nil {
-		t.Errorf("nextCursor = %q on a short page, want none", *success.NextCursor)
+	if !strings.Contains(server.searchPath, "audit-logs-*") {
+		t.Errorf("searched %q, want the audit-logs-* pattern", server.searchPath)
 	}
 }
 
-func TestQueryAuditLogs_MintsACursorOnAFullPage(t *testing.T) {
-	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
-		auditHit("evt-1", "2026-09-01T10:00:00Z", []interface{}{"2026-09-01T10:00:00Z", "evt-1"}),
-	}, 5, "eq"))
-	defer server.Close()
-
-	limit := 1
-	body := auditRequestBody()
-	body.Limit = &limit
-
-	resp, err := auditHandler(t, server.URL).QueryAuditLogs(
-		context.Background(), gen.QueryAuditLogsRequestObject{Body: body})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	success := resp.(gen.QueryAuditLogs200JSONResponse)
-	if success.NextCursor == nil {
-		t.Fatal("nextCursor is absent on a full page")
-	}
-
-	cursor, err := osearch.DecodeAuditCursor(*success.NextCursor)
-	if err != nil {
-		t.Fatalf("minted cursor does not decode: %v", err)
-	}
-	if cursor.PITID != "pit-1" {
-		t.Errorf("cursor pit = %q, want the one the cluster echoed", cursor.PITID)
-	}
-	if len(cursor.SortAfter) != 2 {
-		t.Errorf("cursor sort values = %v, want the last hit's", cursor.SortAfter)
-	}
-}
-
-// An expired cursor is the caller's to act on, so it gets its own status. Answering
-// an empty page would read as the end of the trail.
-func TestQueryAuditLogs_ExpiredCursorIsGoneNotEmpty(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": map[string]interface{}{
-				"type":   "search_context_missing_exception",
-				"reason": "No search context found for id [42]",
-			},
-		})
-	}))
-	defer server.Close()
-
-	cursor, err := osearch.AuditCursor{
-		PITID:     "pit-expired",
-		SortAfter: []any{"2026-09-01T10:00:00Z", "evt-1"},
-	}.Encode()
-	if err != nil {
-		t.Fatalf("Encode() error = %v", err)
-	}
-
-	body := auditRequestBody()
-	body.Cursor = &cursor
-
-	resp, err := auditHandler(t, server.URL).QueryAuditLogs(
-		context.Background(), gen.QueryAuditLogsRequestObject{Body: body})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := resp.(gen.QueryAuditLogs410JSONResponse); !ok {
-		t.Fatalf("expected 410 response, got %T", resp)
-	}
-}
-
-// The timeline covers the whole window, so it is computed once on the first page and
-// left off every continuation rather than recomputed per page.
-func TestQueryAuditLogs_TimelineOnlyOnTheFirstPage(t *testing.T) {
-	payload := auditSearchPayload(nil, 0, "eq")
+func TestQueryAuditLogs_TimelineKeepsEmptyBuckets(t *testing.T) {
+	payload := auditSearchPayload(nil, 0)
 	payload["aggregations"] = map[string]interface{}{
 		"timeline": map[string]interface{}{
 			"buckets": []map[string]interface{}{
@@ -392,38 +282,25 @@ func TestQueryAuditLogs_TimelineOnlyOnTheFirstPage(t *testing.T) {
 	if len(success.Timeline.Buckets) != 1 || success.Timeline.Buckets[0].Total != 0 {
 		t.Errorf("buckets = %+v, want the empty bucket kept", success.Timeline.Buckets)
 	}
-
-	if _, ok := server.searchBody["aggs"]; !ok {
-		t.Error("first page did not request the timeline aggregation")
-	}
 }
 
-func TestQueryAuditLogs_NoTimelineAggregationWhenPaging(t *testing.T) {
-	server := newAuditServer(t, auditSearchPayload(nil, 0, "eq"))
+// The timeline costs an extra aggregation pass, so it is requested only when asked for.
+func TestQueryAuditLogs_NoTimelineAggregationUnlessRequested(t *testing.T) {
+	server := newAuditServer(t, auditSearchPayload(nil, 0))
 	defer server.Close()
 
-	cursor, err := osearch.AuditCursor{PITID: "pit-1", SortAfter: []any{"x"}}.Encode()
-	if err != nil {
-		t.Fatalf("Encode() error = %v", err)
-	}
-
-	includeTimeline := true
-	body := auditRequestBody()
-	body.IncludeTimeline = &includeTimeline
-	body.Cursor = &cursor
-
 	if _, err := auditHandler(t, server.URL).QueryAuditLogs(
-		context.Background(), gen.QueryAuditLogsRequestObject{Body: body}); err != nil {
+		context.Background(), gen.QueryAuditLogsRequestObject{Body: auditRequestBody()}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if _, ok := server.searchBody["aggs"]; ok {
-		t.Error("a continuation page recomputed the timeline")
+		t.Error("an unrequested timeline aggregation was sent")
 	}
 }
 
 func TestQueryAuditLogFilterValues_RejectsAnUnknownFilter(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, 0, nil, testLogger())
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 
 	resp, err := handler.QueryAuditLogFilterValues(
 		context.Background(), gen.QueryAuditLogFilterValuesRequestObject{
@@ -451,7 +328,6 @@ func TestQueryAuditLogFilterValues_ReturnsValuesInOrder(t *testing.T) {
 					{"key": "user-1", "doc_count": 10},
 					{"key": "user-2", "doc_count": 4},
 				},
-				"sum_other_doc_count": 0,
 			},
 			"total_values": map[string]interface{}{"value": 2},
 		},
@@ -486,26 +362,6 @@ func TestQueryAuditLogFilterValues_ReturnsValuesInOrder(t *testing.T) {
 	// an empty aggregation rather than an error. Assert the index it actually hit.
 	if !strings.Contains(server.searchPath, "audit-logs-*") {
 		t.Errorf("searched %q, want the audit-logs-* pattern", server.searchPath)
-	}
-}
-
-// The record query runs against a point-in-time, which must be opened over the audit
-// wildcard - not the container logs, and not a day-walked index list.
-func TestQueryAuditLogs_OpensThePITOverTheAuditWildcard(t *testing.T) {
-	server := newAuditServer(t, auditSearchPayload(nil, 0, "eq"))
-	defer server.Close()
-
-	if _, err := auditHandler(t, server.URL).QueryAuditLogs(
-		context.Background(), gen.QueryAuditLogsRequestObject{Body: auditRequestBody()}); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if !strings.Contains(server.pitPath, "audit-logs-*") {
-		t.Errorf("opened a PIT over %q, want the audit-logs-* pattern", server.pitPath)
-	}
-	// A PIT search names no index: the point-in-time already carries them.
-	if strings.Contains(server.searchPath, "audit-logs-") {
-		t.Errorf("PIT search named indices in %q; the PIT carries them", server.searchPath)
 	}
 }
 
@@ -547,9 +403,9 @@ func TestQueryAuditLogFilterValues_IgnoresTheNamedFiltersOwnSelections(t *testin
 	}
 }
 
-// limit, sortOrder, cursor and the timeline controls carry no meaning here and the
-// contract says to ignore them rather than reject them.
-func TestQueryAuditLogFilterValues_IgnoresRecordPagingControls(t *testing.T) {
+// limit, sortOrder and the timeline controls carry no meaning here and the contract
+// says to ignore them rather than reject them.
+func TestQueryAuditLogFilterValues_IgnoresRecordQueryControls(t *testing.T) {
 	server := newAuditServer(t, map[string]interface{}{
 		"took":      2,
 		"timed_out": false,
@@ -562,13 +418,11 @@ func TestQueryAuditLogFilterValues_IgnoresRecordPagingControls(t *testing.T) {
 	defer server.Close()
 
 	limit := 7
-	cursor := "ignored"
 	includeTimeline := true
 	sortOrder := gen.AuditLogsQueryRequestSortOrder("asc")
 
 	query := *auditRequestBody()
 	query.Limit = &limit
-	query.Cursor = &cursor
 	query.IncludeTimeline = &includeTimeline
 	query.SortOrder = &sortOrder
 
@@ -591,5 +445,20 @@ func TestQueryAuditLogFilterValues_IgnoresRecordPagingControls(t *testing.T) {
 	}
 	if _, ok := server.searchBody["aggs"].(map[string]interface{})["timeline"]; ok {
 		t.Error("query.includeTimeline was honoured on the filter values operation")
+	}
+}
+
+// Answering 501 is what lets the observer tell a missing capability apart from a
+// filter that genuinely has no values; an empty 200 would claim the latter.
+func TestQueryPlatformLogFilterValues_NotImplemented(t *testing.T) {
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
+
+	resp, err := handler.QueryPlatformLogFilterValues(
+		context.Background(), gen.QueryPlatformLogFilterValuesRequestObject{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := resp.(gen.QueryPlatformLogFilterValues501JSONResponse); !ok {
+		t.Fatalf("expected 501 response, got %T", resp)
 	}
 }

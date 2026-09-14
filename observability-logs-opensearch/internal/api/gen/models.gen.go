@@ -80,12 +80,6 @@ const (
 	UserAgent           AuditLogFilterValuesRequestFilter = "user_agent"
 )
 
-// Defines values for AuditLogFilterValuesResponseTotalRelation.
-const (
-	AuditLogFilterValuesResponseTotalRelationEq  AuditLogFilterValuesResponseTotalRelation = "eq"
-	AuditLogFilterValuesResponseTotalRelationGte AuditLogFilterValuesResponseTotalRelation = "gte"
-)
-
 // Defines values for AuditLogsQueryRequestCategory.
 const (
 	Access        AuditLogsQueryRequestCategory = "access"
@@ -111,12 +105,6 @@ const (
 const (
 	Mcp  AuditLogsQueryRequestSurface = "mcp"
 	Rest AuditLogsQueryRequestSurface = "rest"
-)
-
-// Defines values for AuditLogsResponseTotalRelation.
-const (
-	AuditLogsResponseTotalRelationEq  AuditLogsResponseTotalRelation = "eq"
-	AuditLogsResponseTotalRelationGte AuditLogsResponseTotalRelation = "gte"
 )
 
 // Defines values for ErrorResponseTitle.
@@ -149,6 +137,14 @@ const (
 const (
 	LogsQueryRequestSortOrderAsc  LogsQueryRequestSortOrder = "asc"
 	LogsQueryRequestSortOrderDesc LogsQueryRequestSortOrder = "desc"
+)
+
+// Defines values for PlatformLogFilterValuesRequestFilter.
+const (
+	ClusterInstance PlatformLogFilterValuesRequestFilter = "clusterInstance"
+	ContainerName   PlatformLogFilterValuesRequestFilter = "containerName"
+	Namespace       PlatformLogFilterValuesRequestFilter = "namespace"
+	PodName         PlatformLogFilterValuesRequestFilter = "podName"
 )
 
 // Defines values for PlatformLogsQueryRequestLogLevels.
@@ -400,13 +396,7 @@ type AuditLogFilterValuesResponse struct {
 	// TookMs The time taken to compute the values in milliseconds
 	TookMs int64 `json:"tookMs"`
 
-	// TotalRelation Whether `totalValues` is exact (`eq`) or a lower bound (`gte`). Counting
-	// distinct values exactly is itself expensive on a high-cardinality field, so
-	// an estimate must be labelled `gte` rather than passed off as exact.
-	TotalRelation AuditLogFilterValuesResponseTotalRelation `json:"totalRelation"`
-
 	// TotalValues How many distinct values match, of which at most `maxValues` were returned.
-	// Read with `totalRelation`.
 	TotalValues int64 `json:"totalValues"`
 
 	// Values Distinct values, ordered by `count` descending then `value` ascending.
@@ -414,11 +404,6 @@ type AuditLogFilterValuesResponse struct {
 	// entry, because no filter value would select one.
 	Values []AuditLogFilterValue `json:"values"`
 }
-
-// AuditLogFilterValuesResponseTotalRelation Whether `totalValues` is exact (`eq`) or a lower bound (`gte`). Counting
-// distinct values exactly is itself expensive on a high-cardinality field, so
-// an estimate must be labelled `gte` rather than passed off as exact.
-type AuditLogFilterValuesResponseTotalRelation string
 
 // AuditLogHTTPInfo The request line, for an event that arrived over HTTP. Absent for an MCP
 // `tools/call`, which has none.
@@ -467,12 +452,7 @@ type AuditLogRecord struct {
 
 	// Http The request line, for an event that arrived over HTTP. Absent for an MCP
 	// `tools/call`, which has none.
-	Http *AuditLogHTTPInfo `json:"http,omitempty"`
-
-	// Log The raw line the collector ingested, preserved alongside the parsed fields.
-	// Present when the storage backend retains it. This is the ground truth a
-	// parsing discrepancy is settled against.
-	Log      *string                 `json:"log,omitempty"`
+	Http     *AuditLogHTTPInfo       `json:"http,omitempty"`
 	Metadata *map[string]interface{} `json:"metadata,omitempty"`
 
 	// OperationId Canonical operation identifier, e.g. `CreateProject`
@@ -615,16 +595,6 @@ type AuditLogsQueryRequest struct {
 	// trail itself is recorded under it.
 	Category *[]AuditLogsQueryRequestCategory `json:"category,omitempty"`
 
-	// Cursor Opaque continuation token from a previous response's `nextCursor`. Minted
-	// and interpreted by this adapter; the observer passes it through without
-	// parsing it. Its shape is deliberately unspecified so the contract does not
-	// pick a storage backend by accident.
-	//
-	// When `cursor` is set, the adapter must continue the ordering the token
-	// pins rather than re-running the query, so a record written mid-scroll
-	// cannot shift a page boundary. An expired token is a `410`.
-	Cursor *string `json:"cursor,omitempty"`
-
 	// EndTime Exclusive upper bound of the event window
 	EndTime time.Time `json:"endTime"`
 
@@ -640,8 +610,8 @@ type AuditLogsQueryRequest struct {
 	//
 	// This is the only aggregation on this operation. Per-filter distinct values
 	// are deliberately not requested here — one aggregation per filter rather
-	// than one in total is enough load to matter on a busy trail, and they are
-	// planned as their own operation instead.
+	// than one in total is enough load to matter on a busy trail. They have their
+	// own operation, `POST /api/v1alpha1/audit-logs/filter-values`.
 	IncludeTimeline *bool `json:"includeTimeline,omitempty"`
 
 	// Limit The maximum number of records to return
@@ -726,11 +696,6 @@ type AuditLogsResourceFilter struct {
 
 // AuditLogsResponse defines model for AuditLogsResponse.
 type AuditLogsResponse struct {
-	// NextCursor Opaque token for the next page. Absent when this page is the last one.
-	// Absence is the only end-of-results signal — see the `410` response for the
-	// expired case.
-	NextCursor *string `json:"nextCursor,omitempty"`
-
 	// Records Audit records matching the query, in `sortOrder` of `event_time`
 	Records []AuditLogRecord `json:"records"`
 
@@ -742,21 +707,13 @@ type AuditLogsResponse struct {
 	// TookMs The time taken to query the audit logs in milliseconds
 	TookMs int64 `json:"tookMs"`
 
-	// Total Number of matching records. Read with `totalRelation`.
+	// Total Exact number of records matching the query across the whole window, not the
+	// number returned — `records` holds at most `limit`. A backend that caps hit
+	// counting by default must be configured to count fully: an audit consumer
+	// reading an understated total draws the wrong conclusion about how much
+	// happened.
 	Total int64 `json:"total"`
-
-	// TotalRelation Whether `total` is exact (`eq`) or a lower bound the backend stopped counting
-	// at (`gte`). Required so a capped count cannot silently claim to be exact —
-	// an audit consumer reading `total` as exact when it is capped draws the wrong
-	// conclusion about how much happened.
-	TotalRelation AuditLogsResponseTotalRelation `json:"totalRelation"`
 }
-
-// AuditLogsResponseTotalRelation Whether `total` is exact (`eq`) or a lower bound the backend stopped counting
-// at (`gte`). Required so a capped count cannot silently claim to be exact —
-// an audit consumer reading `total` as exact when it is capped draws the wrong
-// conclusion about how much happened.
-type AuditLogsResponseTotalRelation string
 
 // ComponentLogEntry defines model for ComponentLogEntry.
 type ComponentLogEntry struct {
@@ -989,6 +946,73 @@ type PlatformLog struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
+// PlatformLogFilterValue One value a filter takes, with how many records carry it.
+type PlatformLogFilterValue struct {
+	// Count Matching records carrying this value. May be approximate on a
+	// high-cardinality filter where the backend answers from a partial term
+	// count, so it is an ordering hint rather than a total.
+	Count int64 `json:"count"`
+
+	// Value The value, exactly as it would be sent back as a filter
+	Value string `json:"value"`
+}
+
+// PlatformLogFilterValuesRequest Which filter to list values for, and the query to list them under.
+//
+// `query` is a full `PlatformLogsQueryRequest`, in the same shape as a record
+// query - so the observer passes the query it already holds rather than
+// rebuilding it. Its `startTime` and `endTime` are required, so every call here
+// is scoped to a period.
+//
+// The other filters in `query` narrow which records the values are drawn from,
+// except the one named by `filter`, whose own selections are ignored.
+//
+// `query.limit` and `query.sortOrder` carry no meaning here: no records are
+// returned, so there is nothing to page or order. They are accepted and ignored
+// rather than rejected.
+type PlatformLogFilterValuesRequest struct {
+	// Filter The filter to list values for, named as the request field that accepts it.
+	Filter PlatformLogFilterValuesRequestFilter `json:"filter"`
+
+	// MaxValues The maximum number of values to return, ordered by `count` descending then
+	// `value` ascending, so a truncated list holds the busiest. Named to stay
+	// distinct from `query.limit`, which is a record page size and is ignored
+	// here.
+	MaxValues *int `json:"maxValues,omitempty"`
+
+	// Query A flat set of Kubernetes coordinates. Multi-value fields OR within a field; fields
+	// AND with each other. An absent field is not a filter.
+	Query PlatformLogsQueryRequest `json:"query"`
+
+	// ValueSearch Return only values containing this text, case-insensitively. Narrows the
+	// *values* returned, where `query.searchPhrase` narrows the *records* they
+	// are drawn from.
+	ValueSearch *string `json:"valueSearch,omitempty"`
+}
+
+// PlatformLogFilterValuesRequestFilter The filter to list values for, named as the request field that accepts it.
+type PlatformLogFilterValuesRequestFilter string
+
+// PlatformLogFilterValuesResponse defines model for PlatformLogFilterValuesResponse.
+type PlatformLogFilterValuesResponse struct {
+	// Filter The filter these values belong to, echoed from the request
+	Filter string `json:"filter"`
+
+	// TookMs The time taken to compute the values in milliseconds
+	TookMs int `json:"tookMs"`
+
+	// TotalValues How many distinct values match, of which at most `maxValues` were returned.
+	// Counting distinct values exactly is an expensive aggregation on a
+	// high-cardinality field, so this is a sense of scale rather than a
+	// guaranteed total.
+	TotalValues int64 `json:"totalValues"`
+
+	// Values Distinct values, ordered by `count` descending then `value` ascending.
+	// Records on which the field is absent are not represented: no empty-string
+	// entry, because no filter value would select one.
+	Values []PlatformLogFilterValue `json:"values"`
+}
+
 // PlatformLogsQueryRequest A flat set of Kubernetes coordinates. Multi-value fields OR within a field; fields
 // AND with each other. An absent field is not a filter.
 type PlatformLogsQueryRequest struct {
@@ -1079,6 +1103,9 @@ type QueryAuditLogFilterValuesJSONRequestBody = AuditLogFilterValuesRequest
 
 // QueryAuditLogsJSONRequestBody defines body for QueryAuditLogs for application/json ContentType.
 type QueryAuditLogsJSONRequestBody = AuditLogsQueryRequest
+
+// QueryPlatformLogFilterValuesJSONRequestBody defines body for QueryPlatformLogFilterValues for application/json ContentType.
+type QueryPlatformLogFilterValuesJSONRequestBody = PlatformLogFilterValuesRequest
 
 // QueryPlatformLogsJSONRequestBody defines body for QueryPlatformLogs for application/json ContentType.
 type QueryPlatformLogsJSONRequestBody = PlatformLogsQueryRequest

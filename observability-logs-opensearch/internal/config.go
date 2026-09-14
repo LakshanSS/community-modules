@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 )
 
 // Config holds the application configuration.
@@ -22,7 +21,6 @@ type Config struct {
 	OpenSearchIndexPrefix       string
 	OpenSearchEventsIndexPrefix string
 	OpenSearchAuditIndexPrefix  string
-	AuditCursorKeepAlive        time.Duration
 	TLSSkipVerify               bool
 	ObserverURL                 string
 	LogLevel                    slog.Level
@@ -38,21 +36,6 @@ func LoadConfig() (*Config, error) {
 	openSearchEventsIndexPrefix := getEnv("OPENSEARCH_EVENTS_INDEX_PREFIX", "k8s-events-")
 	openSearchAuditIndexPrefix := getEnv("OPENSEARCH_AUDIT_INDEX_PREFIX", "audit-logs-")
 	observerURL := getEnv("OBSERVER_URL", "")
-
-	// How long an audit query's point-in-time is held open between pages. Long
-	// enough that a person reading a page does not lose their place; short enough
-	// that an abandoned scroll releases its resources without being told to.
-	auditCursorKeepAlive := 5 * time.Minute
-	if v := os.Getenv("AUDIT_CURSOR_KEEP_ALIVE"); v != "" {
-		parsed, err := time.ParseDuration(v)
-		if err != nil {
-			return nil, fmt.Errorf("invalid AUDIT_CURSOR_KEEP_ALIVE value: %w", err)
-		}
-		if parsed <= 0 {
-			return nil, fmt.Errorf("AUDIT_CURSOR_KEEP_ALIVE must be positive, got: %s", v)
-		}
-		auditCursorKeepAlive = parsed
-	}
 
 	tlsSkipVerify := true
 	if v := os.Getenv("OPENSEARCH_TLS_SKIP_VERIFY"); v != "" {
@@ -109,7 +92,6 @@ func LoadConfig() (*Config, error) {
 		OpenSearchIndexPrefix:       openSearchIndexPrefix,
 		OpenSearchEventsIndexPrefix: openSearchEventsIndexPrefix,
 		OpenSearchAuditIndexPrefix:  openSearchAuditIndexPrefix,
-		AuditCursorKeepAlive:        auditCursorKeepAlive,
 		TLSSkipVerify:               tlsSkipVerify,
 		ObserverURL:                 observerURL,
 		LogLevel:                    logLevel,

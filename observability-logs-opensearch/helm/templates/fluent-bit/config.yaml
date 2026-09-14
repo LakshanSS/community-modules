@@ -89,8 +89,9 @@ data:
         Emitter_Name  audit_emitter_{{ $p.producer }}
 {{ end }}
     # Reserve_Data keeps the kubernetes.* enrichment and the cluster stamp;
-    # Preserve_Key keeps the raw line, which is the only artifact a producer-side
-    # signature could later be verified over.
+    # Preserve_Key keeps the raw line. The read API no longer returns that line, but
+    # free-text search still matches against it, so dropping it would silently break
+    # searchPhrase rather than just save space.
     [FILTER]
         Name          parser
         Match         audit.*

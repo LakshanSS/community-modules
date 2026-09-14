@@ -125,6 +125,19 @@ func (h *LogsHandler) QueryPlatformLogs(
 	}, nil
 }
 
+// QueryPlatformLogFilterValues implements POST /api/v1alpha1/platform-logs/filter-values.
+//
+// The contract sanctions 501 for an adapter that serves platform logs but does not
+// aggregate them. An empty 200 would instead claim the filter has no values.
+func (h *LogsHandler) QueryPlatformLogFilterValues(
+	_ context.Context, _ gen.QueryPlatformLogFilterValuesRequestObject,
+) (gen.QueryPlatformLogFilterValuesResponseObject, error) {
+	return gen.QueryPlatformLogFilterValues501JSONResponse{
+		Title:   ptr(gen.NotImplemented),
+		Message: ptr("platform log filter values are not supported by this adapter"),
+	}, nil
+}
+
 // derefSlice returns the pointed-to slice, or nil. An absent multi-value filter and an
 // empty one mean the same thing here: not a filter.
 func derefSlice(v *[]string) []string {

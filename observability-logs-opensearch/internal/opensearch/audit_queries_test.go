@@ -59,10 +59,11 @@ func TestBuildAuditLogsQuery_MapsEveryFilterOntoItsField(t *testing.T) {
 	if query["size"] != 50 {
 		t.Errorf("size = %v, want 50", query["size"])
 	}
-	// A bound, not true: with true the backend counts every match and always answers
-	// relation eq, so a capped count could never be reported as one.
-	if query["track_total_hits"] != auditTotalHitsCap {
-		t.Errorf("track_total_hits = %v, want %d", query["track_total_hits"], auditTotalHitsCap)
+	// The contract specifies total as exact, so counting must not stop at
+	// OpenSearch's default 10000 cap - there is no field in which to say a count
+	// was truncated.
+	if query["track_total_hits"] != true {
+		t.Errorf("track_total_hits = %v, want true", query["track_total_hits"])
 	}
 
 	clauses := auditFilterClauses(t, query)
@@ -149,8 +150,8 @@ func TestBuildAuditLogsQuery_OmitsEmptyFilters(t *testing.T) {
 	}
 }
 
-// Sorting on event_time alone would let a page boundary fall inside a group of records
-// sharing a timestamp, which repeats or skips records across pages.
+// Sorting on event_time alone leaves records sharing a timestamp in an arbitrary
+// order, so two identical queries can disagree on which of them the limit cuts off.
 func TestBuildAuditLogsQuery_SortsWithATiebreaker(t *testing.T) {
 	qb := NewQueryBuilder("audit-logs-")
 
@@ -180,47 +181,6 @@ func TestAuditIndexPattern_IsAWildcardNotADayWalk(t *testing.T) {
 
 	if got := qb.AuditIndexPattern(); got != "audit-logs-*" {
 		t.Errorf("AuditIndexPattern() = %q, want audit-logs-*", got)
-	}
-}
-
-func TestAuditCursor_RoundTrips(t *testing.T) {
-	original := AuditCursor{
-		PITID:     "pit-abc",
-		SortAfter: []any{"2026-09-01T00:00:00Z", "evt-1"},
-		SortOrder: "desc",
-	}
-
-	token, err := original.Encode()
-	if err != nil {
-		t.Fatalf("Encode() error = %v", err)
-	}
-
-	decoded, err := DecodeAuditCursor(token)
-	if err != nil {
-		t.Fatalf("DecodeAuditCursor() error = %v", err)
-	}
-	if decoded.PITID != original.PITID {
-		t.Errorf("PITID = %q, want %q", decoded.PITID, original.PITID)
-	}
-	if decoded.SortOrder != original.SortOrder {
-		t.Errorf("SortOrder = %q, want %q", decoded.SortOrder, original.SortOrder)
-	}
-	if len(decoded.SortAfter) != len(original.SortAfter) {
-		t.Errorf("SortAfter = %v, want %v", decoded.SortAfter, original.SortAfter)
-	}
-}
-
-func TestDecodeAuditCursor_RejectsGarbage(t *testing.T) {
-	for _, tc := range []struct{ name, token string }{
-		{"not base64", "!!!not-base64!!!"},
-		{"not json", "bm90IGpzb24"},
-		{"no pit id", "eyJhZnRlciI6WyJ4Il19"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DecodeAuditCursor(tc.token); err == nil {
-				t.Error("expected an error, got nil")
-			}
-		})
 	}
 }
 
@@ -402,7 +362,7 @@ func TestParseAuditFilterValues_DropsValuesNoFilterWouldSelect(t *testing.T) {
 		"total_values": {"value": 2}
 	}`)
 
-	values, total, _, err := ParseAuditFilterValues(aggs)
+	values, total, err := ParseAuditFilterValues(aggs)
 	if err != nil {
 		t.Fatalf("ParseAuditFilterValues() error = %v", err)
 	}
@@ -416,23 +376,25 @@ func TestParseAuditFilterValues_DropsValuesNoFilterWouldSelect(t *testing.T) {
 	}
 }
 
-// Claiming an estimate is exact is the one thing the contract rules out: a consumer
-// reading a capped count as exact draws the wrong conclusion about how much happened.
-func TestParseAuditFilterValues_LabelsATruncatedCountAsALowerBound(t *testing.T) {
+// totalValues counts the distinct values that match, which is not the number returned:
+// the terms aggregation returns at most maxValues of them.
+func TestParseAuditFilterValues_TotalIsNotThePageSize(t *testing.T) {
 	aggs := json.RawMessage(`{
 		"values": {
-			"buckets": [{"key": "user-1", "doc_count": 10}],
-			"sum_other_doc_count": 42
+			"buckets": [{"key": "user-1", "doc_count": 10}]
 		},
 		"total_values": {"value": 9000}
 	}`)
 
-	_, _, exact, err := ParseAuditFilterValues(aggs)
+	values, total, err := ParseAuditFilterValues(aggs)
 	if err != nil {
 		t.Fatalf("ParseAuditFilterValues() error = %v", err)
 	}
-	if exact {
-		t.Error("a truncated value list was reported as an exact count")
+	if len(values) != 1 {
+		t.Errorf("values = %v, want the single returned bucket", values)
+	}
+	if total != 9000 {
+		t.Errorf("totalValues = %d, want 9000", total)
 	}
 }
 

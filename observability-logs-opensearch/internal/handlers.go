@@ -21,13 +21,12 @@ import (
 
 // LogsHandler implements the generated StrictServerInterface.
 type LogsHandler struct {
-	osClient             *opensearch.Client
-	queryBuilder         *opensearch.QueryBuilder
-	eventsQueryBuilder   *opensearch.QueryBuilder
-	auditQueryBuilder    *opensearch.QueryBuilder
-	auditCursorKeepAlive time.Duration
-	observerClient       *observer.Client
-	logger               *slog.Logger
+	osClient           *opensearch.Client
+	queryBuilder       *opensearch.QueryBuilder
+	eventsQueryBuilder *opensearch.QueryBuilder
+	auditQueryBuilder  *opensearch.QueryBuilder
+	observerClient     *observer.Client
+	logger             *slog.Logger
 }
 
 // NewLogsHandler creates a new LogsHandler.
@@ -36,18 +35,16 @@ func NewLogsHandler(
 	queryBuilder *opensearch.QueryBuilder,
 	eventsQueryBuilder *opensearch.QueryBuilder,
 	auditQueryBuilder *opensearch.QueryBuilder,
-	auditCursorKeepAlive time.Duration,
 	observerClient *observer.Client,
 	logger *slog.Logger,
 ) *LogsHandler {
 	return &LogsHandler{
-		osClient:             osClient,
-		queryBuilder:         queryBuilder,
-		eventsQueryBuilder:   eventsQueryBuilder,
-		auditQueryBuilder:    auditQueryBuilder,
-		auditCursorKeepAlive: auditCursorKeepAlive,
-		observerClient:       observerClient,
-		logger:               logger,
+		osClient:           osClient,
+		queryBuilder:       queryBuilder,
+		eventsQueryBuilder: eventsQueryBuilder,
+		auditQueryBuilder:  auditQueryBuilder,
+		observerClient:     observerClient,
+		logger:             logger,
 	}
 }
 

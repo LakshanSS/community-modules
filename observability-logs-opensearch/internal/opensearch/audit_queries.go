@@ -4,7 +4,6 @@
 package opensearch
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -12,45 +11,30 @@ import (
 	"time"
 )
 
-// AuditEventTimeField is the record's own time: when the audited request was
-// received. Filtering and sorting use it rather than @timestamp, which is when the
-// collector read the line and is what picks the daily index. The two normally differ
-// by milliseconds, and by much more when collection was backed up.
+// AuditEventTimeField is when the audited request was received. Filtering and sorting
+// use it rather than @timestamp, which is when the collector read the line.
 const AuditEventTimeField = "event_time"
 
-// AuditEventIDField is a UUID v7, unique per record, so it breaks ties between two
-// records sharing an event_time deterministically. Sorting on event_time alone would
-// let a page boundary fall inside a group of equal timestamps and repeat or skip
-// records across pages.
+// AuditEventIDField is a UUID v7, unique per record.
 const AuditEventIDField = "event_id"
 
 // AuditEntitlementValuesField holds the values of every claim in the record's
-// actor.entitlements map, copied there by the index template. Both the entitlement
-// filter and its value picker read it: the claim key varies by subject kind, and a
-// caller filtering on an entitlement should not have to know which claim carries it.
+// actor.entitlements map, copied there by the index template, so a caller can filter on
+// an entitlement without knowing which claim carries it.
 const AuditEntitlementValuesField = "actor.entitlement_values"
 
-// maxTimelineBuckets caps how many buckets a timeline may hold. The contract requires
-// a request that would exceed it to be coarsened rather than rejected.
+// maxTimelineBuckets is the ceiling the contract requires a wider request to be
+// coarsened to rather than rejected against.
 const maxTimelineBuckets = 500
 
-// maxAggregationRegexLength is OpenSearch's index.max_regex_length default. A terms
-// aggregation include is a Lucene regex and is rejected outright above it.
+// maxAggregationRegexLength is OpenSearch's index.max_regex_length default.
 const maxAggregationRegexLength = 1000
 
-// auditTotalHitsCap bounds how far the backend counts matches.
-//
-// A bound rather than `true`: counting without one is an unbounded pass over a
-// year-deep index on every broad query, which is the cost the wildcard index pattern
-// exists to avoid. Below the cap OpenSearch reports an exact count and relation `eq`;
-// above it, `{value: <cap>, relation: "gte"}` - which is what lets the response say
-// honestly that more happened than it counted, rather than passing a capped figure off
-// as exact.
-const auditTotalHitsCap = 10000
+// auditTrackTotalHits counts every match rather than stopping at OpenSearch's default
+// 10000: the contract specifies total as exact and offers no way to mark one truncated.
+const auditTrackTotalHits = true
 
-// AuditLogsQueryParams holds the filters for an audit log query. Each field maps onto
-// one stored field, named as the record names it, so a rename on either side shows up
-// here rather than being absorbed by a lookup table.
+// AuditLogsQueryParams holds the filters for an audit log query.
 type AuditLogsQueryParams struct {
 	StartTime string
 	EndTime   string
@@ -84,48 +68,12 @@ type AuditLogsQueryParams struct {
 	SortOrder    string
 }
 
-// AuditCursor pins one page of results to a point in time, so a record written
-// mid-scroll cannot shift a page boundary. It is encoded opaquely: the contract
-// deliberately leaves the shape unspecified so it does not pick a storage backend.
-type AuditCursor struct {
-	PITID     string `json:"pit"`
-	SortAfter []any  `json:"after"`
-	SortOrder string `json:"order"`
-}
-
-// Encode renders the cursor as the opaque token the contract passes around.
-func (c AuditCursor) Encode() (string, error) {
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return "", fmt.Errorf("failed to encode cursor: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-// DecodeAuditCursor parses a token minted by Encode.
-func DecodeAuditCursor(token string) (AuditCursor, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return AuditCursor{}, fmt.Errorf("failed to decode cursor: %w", err)
-	}
-	var cursor AuditCursor
-	if err := json.Unmarshal(raw, &cursor); err != nil {
-		return AuditCursor{}, fmt.Errorf("failed to parse cursor: %w", err)
-	}
-	if cursor.PITID == "" {
-		return AuditCursor{}, fmt.Errorf("cursor carries no point-in-time id")
-	}
-	return cursor, nil
-}
-
 // AuditIndexPattern returns the wildcard the audit indices are searched through.
 //
-// Deliberately not a day-by-day enumeration like GenerateIndices: audit retention
-// defaults to a year, and a year of daily index names is roughly 8KB of request line
-// against OpenSearch's 4KB default limit — which fails as a malformed request rather
-// than as a length error. The event_time range filter selects the same records, and a
-// point-in-time opened against a wildcard resolves its indices once at open time,
-// which is what keeps a page boundary stable while a new daily index appears.
+// A wildcard rather than GenerateIndices' day-by-day enumeration: audit retention
+// defaults to a year, and a year of daily index names is ~8KB of request line against
+// OpenSearch's 4KB default, which fails as a malformed request rather than a length
+// error.
 func (qb *QueryBuilder) AuditIndexPattern() string {
 	return qb.indexPrefix + "*"
 }
@@ -151,11 +99,12 @@ func (qb *QueryBuilder) BuildAuditLogsQuery(params AuditLogsQueryParams) map[str
 			},
 		},
 		"sort":             auditSort(sortOrder),
-		"track_total_hits": auditTotalHitsCap,
+		"track_total_hits": auditTrackTotalHits,
 	}
 }
 
-// auditSort orders by event time, then by event id to break ties.
+// auditSort breaks event_time ties on event_id, so records sharing a timestamp come
+// back in a stable order across identical queries.
 func auditSort(sortOrder string) []map[string]interface{} {
 	return []map[string]interface{}{
 		{AuditEventTimeField: map[string]interface{}{"order": sortOrder}},
@@ -163,9 +112,6 @@ func auditSort(sortOrder string) []map[string]interface{} {
 	}
 }
 
-// auditFilters maps the params onto one clause per populated filter. Multi-value
-// fields OR within themselves through a single terms clause and AND with each other
-// by sitting side by side in the filter array; an empty field adds no clause.
 func auditFilters(params AuditLogsQueryParams) []map[string]interface{} {
 	filters := []map[string]interface{}{}
 	filters = addAuditTimeRangeFilter(filters, params.StartTime, params.EndTime)
@@ -199,8 +145,8 @@ func auditFilters(params AuditLogsQueryParams) []map[string]interface{} {
 	return filters
 }
 
-// addAuditTimeRangeFilter bounds the query on the record's own event time.
-// startTime is inclusive and endTime exclusive, as the contract states.
+// addAuditTimeRangeFilter bounds the query on event_time, inclusive of startTime and
+// exclusive of endTime as the contract states.
 func addAuditTimeRangeFilter(
 	filters []map[string]interface{}, startTime, endTime string,
 ) []map[string]interface{} {
@@ -217,12 +163,10 @@ func addAuditTimeRangeFilter(
 	})
 }
 
-// BuildAuditTimelineAgg builds the date histogram that backs the timeline, broken
-// down by result.
+// BuildAuditTimelineAgg builds the date histogram that backs the timeline.
 //
-// min_doc_count 0 and extended_bounds together make the buckets contiguous across the
-// whole window. The contract requires that: a sparse array would let a caller draw a
-// continuous chart straight across a gap in activity, reading quiet as busy.
+// min_doc_count 0 with extended_bounds keeps empty buckets, which the contract
+// requires: a sparse array would let a caller chart straight across a gap in activity.
 func BuildAuditTimelineAgg(interval, startTime, endTime string) map[string]interface{} {
 	return map[string]interface{}{
 		"timeline": map[string]interface{}{
@@ -249,10 +193,8 @@ func BuildAuditTimelineAgg(interval, startTime, endTime string) map[string]inter
 
 // ResolveTimelineInterval picks the bucket width to use.
 //
-// A requested width that would produce more than maxTimelineBuckets is coarsened
-// rather than rejected, and the width actually used is what the caller is told — a
-// rejection would leave a caller who asked for 1m over a year with no timeline at all,
-// when a coarser one answers the question they were asking.
+// A width exceeding maxTimelineBuckets is coarsened rather than rejected: rejecting
+// would leave a caller who asked for 1m over a year with no timeline at all.
 func ResolveTimelineInterval(requested string, start, end time.Time) (string, error) {
 	window := end.Sub(start)
 	if window <= 0 {
@@ -264,8 +206,6 @@ func ResolveTimelineInterval(requested string, start, end time.Time) (string, er
 		return "", err
 	}
 	if width <= 0 {
-		// Nothing requested: start from a width that puts the window in a readable
-		// number of buckets, then let the cap below coarsen it if need be.
 		width = window / 60
 		if width < time.Minute {
 			width = time.Minute
@@ -275,7 +215,7 @@ func ResolveTimelineInterval(requested string, start, end time.Time) (string, er
 	for window/width > maxTimelineBuckets {
 		next := coarsenInterval(width)
 		if next <= width {
-			// Already at the coarsest unit; widen by whole weeks until it fits.
+			// Already at the coarsest unit, so widen in whole weeks.
 			width += 7 * 24 * time.Hour
 			continue
 		}
@@ -286,7 +226,7 @@ func ResolveTimelineInterval(requested string, start, end time.Time) (string, er
 }
 
 // parseTimelineInterval reads the contract's <count><unit> notation. An empty string
-// is not an error: it means the adapter chooses.
+// means the adapter chooses, and is not an error.
 func parseTimelineInterval(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, nil
@@ -317,8 +257,7 @@ func parseTimelineInterval(s string) (time.Duration, error) {
 	return time.Duration(count) * unit, nil
 }
 
-// coarsenInterval steps up to the next unit, returning the input unchanged once there
-// is no coarser one.
+// coarsenInterval steps up to the next unit, returning d unchanged at the coarsest one.
 func coarsenInterval(d time.Duration) time.Duration {
 	switch {
 	case d < time.Hour:
@@ -331,11 +270,10 @@ func coarsenInterval(d time.Duration) time.Duration {
 	return d
 }
 
-// formatTimelineInterval renders a duration back into the contract's notation, using
-// the coarsest unit it divides evenly into.
+// formatTimelineInterval renders a duration into the contract's notation.
 //
-// OpenSearch's fixed_interval accepts no unit above d, so weeks are rendered as their
-// day count. The value reported to the caller is the one actually used either way.
+// Weeks are rendered as a day count because OpenSearch's fixed_interval accepts no
+// unit above d.
 func formatTimelineInterval(d time.Duration) string {
 	switch {
 	case d%(24*time.Hour) == 0:
@@ -352,10 +290,7 @@ func formatTimelineInterval(d time.Duration) string {
 }
 
 // BuildAuditFilterValuesQuery builds the search body for a filter's distinct values.
-//
-// The named filter's own selections are dropped from the query, which is what keeps a
-// picker offering the alternatives to what is already selected rather than only the
-// selection itself.
+// The caller drops the named filter's own selections from params first.
 func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 	params AuditLogsQueryParams, field string, valueSearch string, maxValues int,
 ) map[string]interface{} {
@@ -366,7 +301,7 @@ func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 	terms := map[string]interface{}{
 		"field": field,
 		"size":  maxValues,
-		// Busiest first, then by value, so a truncated list is the useful end of it.
+		// Busiest first, so a truncated list holds the useful end of it.
 		"order": []map[string]string{
 			{"_count": "desc"},
 			{"_key": "asc"},
@@ -396,17 +331,13 @@ func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 	}
 }
 
-// valueSearchRegex turns a case-insensitive substring search into the anchored Lucene
-// regex a terms aggregation include takes.
+// valueSearchRegex turns a case-insensitive substring search into the Lucene regex a
+// terms aggregation include takes, reporting false when it would be too long to send.
 //
-// The regex engine has no (?i) flag, so each cased letter is expanded into a character
-// class. Matching on a lowercase normalizer sub-field instead would return lowercased
-// values, and the contract requires a value to come back exactly as it would be sent
+// Each cased letter expands into a character class because the engine has no (?i)
+// flag. A lowercase normalizer sub-field would be simpler but returns lowercased
+// values, and the contract requires values to come back exactly as they would be sent
 // back as a filter.
-//
-// The expansion is roughly four times the input and the engine rejects anything over
-// index.max_regex_length, so an over-long search returns false and is applied in Go
-// after the fact instead.
 func valueSearchRegex(valueSearch string) (string, bool) {
 	if valueSearch == "" {
 		return "", false
@@ -441,10 +372,11 @@ func escapeRegexLiteral(r rune) string {
 	return string(r)
 }
 
-// ParseAuditFilterValues reads the values aggregation back out of a search response.
-func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, int64, bool, error) {
+// ParseAuditFilterValues reads the values aggregation back out of a search response,
+// returning the distinct values and how many distinct values matched in total.
+func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, int64, error) {
 	if len(aggregations) == 0 {
-		return nil, 0, false, nil
+		return nil, 0, nil
 	}
 
 	var parsed struct {
@@ -453,37 +385,30 @@ func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, i
 				Key      string `json:"key"`
 				DocCount int64  `json:"doc_count"`
 			} `json:"buckets"`
-			SumOtherDocCount int64 `json:"sum_other_doc_count"`
 		} `json:"values"`
 		TotalValues struct {
 			Value int64 `json:"value"`
 		} `json:"total_values"`
 	}
 	if err := json.Unmarshal(aggregations, &parsed); err != nil {
-		return nil, 0, false, fmt.Errorf("failed to parse filter value aggregation: %w", err)
+		return nil, 0, fmt.Errorf("failed to parse filter value aggregation: %w", err)
 	}
 
 	values := make([]AuditFilterValue, 0, len(parsed.Values.Buckets))
 	for _, bucket := range parsed.Values.Buckets {
-		// A value the field does not carry has no filter that would select it, so an
-		// empty key is not offered as a choice.
+		// No filter value would select an empty key, so it is not offered as a choice.
 		if bucket.Key == "" {
 			continue
 		}
 		values = append(values, AuditFilterValue{Value: bucket.Key, Count: bucket.DocCount})
 	}
 
-	// cardinality is approximate above a threshold it does not report crossing, so the
-	// count is labelled a lower bound whenever it could have been estimated. Claiming
-	// an estimate is exact is the one thing the contract rules out.
-	exact := parsed.TotalValues.Value <= int64(len(values)) && parsed.Values.SumOtherDocCount == 0
-
-	return values, parsed.TotalValues.Value, exact, nil
+	return values, parsed.TotalValues.Value, nil
 }
 
-// ParseAuditTimeline reads the timeline aggregation back out of a search response.
-// Returns nil when the response carries none, which is a different answer from a
-// timeline reporting no activity.
+// ParseAuditTimeline reads the timeline aggregation back out of a search response,
+// returning nil when the response carries none — a different answer from a timeline
+// reporting no activity.
 func ParseAuditTimeline(aggregations json.RawMessage, interval string) (*AuditTimeline, error) {
 	if len(aggregations) == 0 {
 		return nil, nil

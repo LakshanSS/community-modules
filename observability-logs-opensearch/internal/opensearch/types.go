@@ -26,11 +26,6 @@ type SearchResponse struct {
 	// Aggregations is carried raw so each caller unmarshals only the shape it
 	// asked for, rather than this type growing a union of every aggregation.
 	Aggregations json.RawMessage `json:"aggregations,omitempty"`
-
-	// PitID is the point-in-time the search ran against, echoed back. It can differ
-	// from the one sent, so paginating on the sent value would eventually search a
-	// PIT the cluster no longer keeps.
-	PitID string `json:"pit_id,omitempty"`
 }
 
 // Hit represents a single search result hit.
@@ -38,9 +33,6 @@ type Hit struct {
 	ID     string                 `json:"_id"`
 	Source map[string]interface{} `json:"_source"`
 	Score  *float64               `json:"_score"`
-
-	// Sort carries this hit's sort values, which is what search_after resumes from.
-	Sort []any `json:"sort,omitempty"`
 }
 
 // LogEntry represents a parsed log entry from OpenSearch.

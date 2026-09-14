@@ -75,7 +75,6 @@ func main() {
 		queryBuilder,
 		eventsQueryBuilder,
 		auditQueryBuilder,
-		cfg.AuditCursorKeepAlive,
 		observerClient,
 		logger,
 	)

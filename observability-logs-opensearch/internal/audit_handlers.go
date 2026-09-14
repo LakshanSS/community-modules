@@ -5,25 +5,21 @@ package app
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/openchoreo/community-modules/observability-logs-opensearch/internal/api/gen"
 	"github.com/openchoreo/community-modules/observability-logs-opensearch/internal/opensearch"
 )
 
-// auditFilterFields maps a filter name from the contract onto the field it is stored
-// at. The two differ only where the record's shape and the index's differ, which is
-// why the exceptions are worth naming rather than deriving.
+// auditFilterFields maps a contract filter name onto the field it is stored at.
 var auditFilterFields = map[gen.AuditLogFilterValuesRequestFilter]string{
 	"actor.id":         "actor.id",
 	"actor.type":       "actor.type",
 	"actor.issuer":     "actor.issuer",
 	"actor.session_id": "actor.session_id",
-	// The claim key varies by subject kind, so the picker reads the copy the index
-	// template collects every claim's values into.
+	// The claim key varies by subject kind, so this reads the copy the index template
+	// collects every claim's values into.
 	"actor.entitlements":   opensearch.AuditEntitlementValuesField,
 	"resource.type":        "resource.type",
 	"resource.namespace":   "resource.namespace",
@@ -63,10 +59,9 @@ func (h *LogsHandler) QueryAuditLogs(
 	params := toAuditLogsQueryParams(body)
 	query := h.auditQueryBuilder.BuildAuditLogsQuery(params)
 
-	// The timeline covers the whole window, not just the page, so it is computed
-	// once on the first request and omitted from every continuation.
+	// The timeline covers the whole window rather than the returned page.
 	timelineInterval := ""
-	if body.IncludeTimeline != nil && *body.IncludeTimeline && body.Cursor == nil {
+	if body.IncludeTimeline != nil && *body.IncludeTimeline {
 		requested := ""
 		if body.TimelineInterval != nil {
 			requested = *body.TimelineInterval
@@ -83,29 +78,9 @@ func (h *LogsHandler) QueryAuditLogs(
 			timelineInterval, params.StartTime, params.EndTime)
 	}
 
-	cursor, err := h.resolveAuditCursor(ctx, body)
+	indices := []string{h.auditQueryBuilder.AuditIndexPattern()}
+	result, err := h.osClient.Search(ctx, indices, query)
 	if err != nil {
-		h.logger.Error("Failed to resolve audit cursor",
-			slog.String("function", "QueryAuditLogs"),
-			slog.Any("error", err),
-		)
-		return gen.QueryAuditLogs500JSONResponse{
-			Title:   ptr(gen.InternalServerError),
-			Message: ptr("internal server error"),
-		}, nil
-	}
-
-	result, err := h.osClient.SearchWithPIT(ctx, query, cursor, h.auditCursorKeepAlive)
-	if err != nil {
-		// An expired cursor is the caller's to act on - restart from the first page -
-		// so it is reported as its own status. Answering an empty page would read as
-		// the end of the trail, which is the one answer that must not be invented.
-		if errors.Is(err, opensearch.ErrPITExpired) {
-			return gen.QueryAuditLogs410JSONResponse{
-				Title:   ptr(gen.Gone),
-				Message: ptr("audit logs cursor has expired; restart the query"),
-			}, nil
-		}
 		h.logger.Error("Failed to query audit logs",
 			slog.String("function", "QueryAuditLogs"),
 			slog.Any("error", err),
@@ -118,9 +93,6 @@ func (h *LogsHandler) QueryAuditLogs(
 
 	records := make([]gen.AuditLogRecord, 0, len(result.Hits.Hits))
 	for _, hit := range result.Hits.Hits {
-		// A document that does not parse is not emitted as a zero-valued record: a
-		// blank actor at the epoch reads as a real finding of "nobody, at no time",
-		// which is worse than saying which document is unreadable.
 		record, err := opensearch.ParseAuditRecord(hit)
 		if err != nil {
 			h.logger.Warn("Skipping malformed audit document",
@@ -132,46 +104,17 @@ func (h *LogsHandler) QueryAuditLogs(
 		records = append(records, toGenAuditLogRecord(record))
 	}
 
+	// Total counts the whole window, not this page.
 	response := gen.AuditLogsResponse{
-		Records:       records,
-		Total:         int64(result.Hits.Total.Value),
-		TotalRelation: toTotalRelation(result.Hits.Total.Relation),
-		TookMs:        int64(result.Took),
-	}
-
-	// A next cursor is minted only for a full page. Offering one on a short page
-	// would make the caller fetch an empty page to discover the end.
-	if len(result.Hits.Hits) > 0 && len(result.Hits.Hits) == params.Limit {
-		last := result.Hits.Hits[len(result.Hits.Hits)-1]
-		if len(last.Sort) > 0 {
-			pitID := result.PitID
-			if pitID == "" {
-				pitID = cursor.PITID
-			}
-			next, err := opensearch.AuditCursor{
-				PITID:     pitID,
-				SortAfter: last.Sort,
-				SortOrder: params.SortOrder,
-			}.Encode()
-			if err != nil {
-				h.logger.Error("Failed to encode audit cursor",
-					slog.String("function", "QueryAuditLogs"),
-					slog.Any("error", err),
-				)
-				return gen.QueryAuditLogs500JSONResponse{
-					Title:   ptr(gen.InternalServerError),
-					Message: ptr("internal server error"),
-				}, nil
-			}
-			response.NextCursor = &next
-		}
+		Records: records,
+		Total:   int64(result.Hits.Total.Value),
+		TookMs:  int64(result.Took),
 	}
 
 	if timelineInterval != "" {
 		timeline, err := opensearch.ParseAuditTimeline(result.Aggregations, timelineInterval)
 		if err != nil {
-			// The records are already in hand and answering them is more useful than
-			// failing the query, so the timeline is dropped and its absence says so.
+			// The records are in hand, so drop the timeline rather than fail the query.
 			h.logger.Warn("Failed to parse audit timeline",
 				slog.String("function", "QueryAuditLogs"),
 				slog.Any("error", err),
@@ -211,8 +154,8 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 		}, nil
 	}
 
-	// The named filter's own selections are dropped so the picker keeps offering the
-	// alternatives to what is already selected, rather than only the selection.
+	// Dropping the named filter's own selections keeps the picker offering the
+	// alternatives to what is already selected.
 	params := toAuditLogsQueryParams(&body.Query)
 	clearAuditFilter(&params, body.Filter)
 
@@ -241,7 +184,7 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 		}, nil
 	}
 
-	values, totalValues, exact, err := opensearch.ParseAuditFilterValues(result.Aggregations)
+	values, totalValues, err := opensearch.ParseAuditFilterValues(result.Aggregations)
 	if err != nil {
 		h.logger.Error("Failed to parse audit log filter values",
 			slog.String("function", "QueryAuditLogFilterValues"),
@@ -253,8 +196,8 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 		}, nil
 	}
 
-	// A search too long to express as an aggregation regex was sent without one, so
-	// it is applied here instead. Applying it twice is harmless.
+	// Covers a search too long to have been sent as an aggregation regex; applying it
+	// twice is harmless.
 	values = opensearch.FilterValuesBySearch(values, valueSearch)
 
 	genValues := make([]gen.AuditLogFilterValue, 0, len(values))
@@ -262,43 +205,14 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 		genValues = append(genValues, gen.AuditLogFilterValue{Value: v.Value, Count: v.Count})
 	}
 
-	relation := gen.AuditLogFilterValuesResponseTotalRelation("gte")
-	if exact {
-		relation = "eq"
-	}
-
 	return gen.QueryAuditLogFilterValues200JSONResponse{
-		Filter:        string(body.Filter),
-		Values:        genValues,
-		TotalValues:   totalValues,
-		TotalRelation: relation,
-		TookMs:        int64(result.Took),
+		Filter:      string(body.Filter),
+		Values:      genValues,
+		TotalValues: totalValues,
+		TookMs:      int64(result.Took),
 	}, nil
 }
 
-// resolveAuditCursor continues the page the caller sent, or opens a new point in time
-// for a first page.
-func (h *LogsHandler) resolveAuditCursor(
-	ctx context.Context, body *gen.AuditLogsQueryRequest,
-) (opensearch.AuditCursor, error) {
-	if body.Cursor != nil && *body.Cursor != "" {
-		return opensearch.DecodeAuditCursor(*body.Cursor)
-	}
-
-	pitID, err := h.osClient.CreatePIT(
-		ctx,
-		[]string{h.auditQueryBuilder.AuditIndexPattern()},
-		h.auditCursorKeepAlive,
-	)
-	if err != nil {
-		return opensearch.AuditCursor{}, err
-	}
-	return opensearch.AuditCursor{PITID: pitID}, nil
-}
-
-// toAuditLogsQueryParams maps the request onto the query params. The filter groups are
-// nested the same way on both sides, so this stays a field-for-field copy - which is
-// where a rename would otherwise go unnoticed.
 func toAuditLogsQueryParams(body *gen.AuditLogsQueryRequest) opensearch.AuditLogsQueryParams {
 	params := opensearch.AuditLogsQueryParams{
 		StartTime:    body.StartTime.Format(time.RFC3339),
@@ -332,7 +246,7 @@ func toAuditLogsQueryParams(body *gen.AuditLogsQueryRequest) opensearch.AuditLog
 	}
 
 	// The closed enums carry generated types rather than plain strings, so each needs
-	// its own conversion. The observer has already rejected unknown values by here.
+	// its own conversion.
 	if body.Category != nil {
 		for _, c := range *body.Category {
 			params.Categories = append(params.Categories, string(c))
@@ -408,18 +322,6 @@ func clearAuditFilter(
 	}
 }
 
-// toTotalRelation passes the backend's own count relation through.
-//
-// A count the backend stopped short of is reported as a lower bound rather than as an
-// exact figure: an audit consumer reading a capped total as exact draws the wrong
-// conclusion about how much happened.
-func toTotalRelation(relation string) gen.AuditLogsResponseTotalRelation {
-	if strings.EqualFold(relation, "eq") {
-		return "eq"
-	}
-	return "gte"
-}
-
 func toGenAuditLogRecord(r opensearch.AuditRecord) gen.AuditLogRecord {
 	record := gen.AuditLogRecord{
 		SchemaVersion: r.SchemaVersion,
@@ -440,7 +342,6 @@ func toGenAuditLogRecord(r opensearch.AuditRecord) gen.AuditLogRecord {
 		Producer:    optional(r.Producer),
 		Surface:     optional(r.Surface),
 		OperationId: optional(r.OperationID),
-		Log:         optional(r.Log),
 	}
 
 	if len(r.Actor.Entitlements) > 0 {
