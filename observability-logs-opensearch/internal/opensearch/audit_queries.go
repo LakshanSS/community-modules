@@ -212,7 +212,9 @@ func ResolveTimelineInterval(requested string, start, end time.Time) (string, er
 		}
 	}
 
-	for window/width > maxTimelineBuckets {
+	// Ceiling, because a window that does not divide evenly spills into one more bucket
+	// than the floor reports.
+	for (window+width-1)/width > maxTimelineBuckets {
 		next := coarsenInterval(width)
 		if next <= width {
 			// Already at the coarsest unit, so widen in whole weeks.
@@ -307,8 +309,15 @@ func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 			{"_key": "asc"},
 		},
 	}
+	// The cardinality is scoped to the same search the buckets are, so the count reports
+	// how many values match rather than how many the field holds. Nesting it under its
+	// own filter keeps the bucket doc counts drawn from the unnarrowed record set.
+	totalScope := map[string]interface{}{"match_all": map[string]interface{}{}}
 	if include, ok := valueSearchRegex(valueSearch); ok {
 		terms["include"] = include
+		totalScope = map[string]interface{}{
+			"regexp": map[string]interface{}{field: include},
+		}
 	}
 
 	return map[string]interface{}{
@@ -323,8 +332,13 @@ func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 				"terms": terms,
 			},
 			"total_values": map[string]interface{}{
-				"cardinality": map[string]interface{}{
-					"field": field,
+				"filter": totalScope,
+				"aggs": map[string]interface{}{
+					"matching": map[string]interface{}{
+						"cardinality": map[string]interface{}{
+							"field": field,
+						},
+					},
 				},
 			},
 		},
@@ -387,7 +401,9 @@ func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, i
 			} `json:"buckets"`
 		} `json:"values"`
 		TotalValues struct {
-			Value int64 `json:"value"`
+			Matching struct {
+				Value int64 `json:"value"`
+			} `json:"matching"`
 		} `json:"total_values"`
 	}
 	if err := json.Unmarshal(aggregations, &parsed); err != nil {
@@ -403,7 +419,7 @@ func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, i
 		values = append(values, AuditFilterValue{Value: bucket.Key, Count: bucket.DocCount})
 	}
 
-	return values, parsed.TotalValues.Value, nil
+	return values, parsed.TotalValues.Matching.Value, nil
 }
 
 // ParseAuditTimeline reads the timeline aggregation back out of a search response,

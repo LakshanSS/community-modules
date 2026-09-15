@@ -234,6 +234,22 @@ func TestResolveTimelineInterval_StaysUnderTheBucketCap(t *testing.T) {
 	}
 }
 
+// A window one instant longer than maxTimelineBuckets whole intervals spills into one
+// more bucket, which a floor division does not see.
+func TestResolveTimelineInterval_CountsThePartialBucket(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(maxTimelineBuckets*time.Minute + time.Nanosecond)
+
+	got, err := ResolveTimelineInterval("1m", start, end)
+	if err != nil {
+		t.Fatalf("ResolveTimelineInterval() error = %v", err)
+	}
+	if got == "1m" {
+		t.Errorf("interval = %q, which yields %d buckets, want a coarser one",
+			got, maxTimelineBuckets+1)
+	}
+}
+
 func TestResolveTimelineInterval_RejectsAnUnusableWindow(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -350,6 +366,38 @@ func TestBuildAuditFilterValuesQuery_OrdersByCountThenValue(t *testing.T) {
 	}
 }
 
+// totalValues reports how many values match, so the count has to see the same search
+// the buckets do. Counting the whole field would report thousands behind a search that
+// narrowed to three.
+func TestBuildAuditFilterValuesQuery_CountsOnlyMatchingValues(t *testing.T) {
+	qb := NewQueryBuilder("audit-logs-")
+	params := AuditLogsQueryParams{
+		StartTime: "2026-09-01T00:00:00Z",
+		EndTime:   "2026-09-02T00:00:00Z",
+	}
+
+	withSearch := qb.BuildAuditFilterValuesQuery(params, "actor.id", "admin", 25)
+	total, ok := withSearch["aggs"].(map[string]interface{})["total_values"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("query has no total_values aggregation: %v", withSearch)
+	}
+	scope, ok := total["filter"].(map[string]interface{})["regexp"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("total_values is not scoped to the search: %v", total)
+	}
+	terms := withSearch["aggs"].(map[string]interface{})["values"].(map[string]interface{})["terms"].(map[string]interface{})
+	if scope["actor.id"] != terms["include"] {
+		t.Errorf("total_values scope = %v, want the buckets' include %v", scope["actor.id"], terms["include"])
+	}
+
+	// Without a search there is nothing to narrow by, and every value counts.
+	noSearch := qb.BuildAuditFilterValuesQuery(params, "actor.id", "", 25)
+	total = noSearch["aggs"].(map[string]interface{})["total_values"].(map[string]interface{})
+	if _, ok := total["filter"].(map[string]interface{})["match_all"]; !ok {
+		t.Errorf("total_values filter = %v, want match_all", total["filter"])
+	}
+}
+
 func TestParseAuditFilterValues_DropsValuesNoFilterWouldSelect(t *testing.T) {
 	aggs := json.RawMessage(`{
 		"values": {
@@ -359,7 +407,7 @@ func TestParseAuditFilterValues_DropsValuesNoFilterWouldSelect(t *testing.T) {
 			],
 			"sum_other_doc_count": 0
 		},
-		"total_values": {"value": 2}
+		"total_values": {"doc_count": 13, "matching": {"value": 2}}
 	}`)
 
 	values, total, err := ParseAuditFilterValues(aggs)
@@ -383,7 +431,7 @@ func TestParseAuditFilterValues_TotalIsNotThePageSize(t *testing.T) {
 		"values": {
 			"buckets": [{"key": "user-1", "doc_count": 10}]
 		},
-		"total_values": {"value": 9000}
+		"total_values": {"doc_count": 50000, "matching": {"value": 9000}}
 	}`)
 
 	values, total, err := ParseAuditFilterValues(aggs)

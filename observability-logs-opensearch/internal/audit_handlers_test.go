@@ -299,6 +299,56 @@ func TestQueryAuditLogs_NoTimelineAggregationUnlessRequested(t *testing.T) {
 	}
 }
 
+// The generated server does not enforce the contract's ceilings, so an over-large
+// request must not reach OpenSearch as asked.
+func TestQueryAuditLogs_ClampsTheLimitToTheContractMaximum(t *testing.T) {
+	server := newAuditServer(t, auditSearchPayload(nil, 0))
+	defer server.Close()
+
+	limit := 50000
+	body := auditRequestBody()
+	body.Limit = &limit
+
+	if _, err := auditHandler(t, server.URL).QueryAuditLogs(
+		context.Background(), gen.QueryAuditLogsRequestObject{Body: body},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := server.searchBody["size"]; got != float64(maxAuditLimit) {
+		t.Errorf("size = %v, want it clamped to %d", got, maxAuditLimit)
+	}
+}
+
+func TestQueryAuditLogFilterValues_ClampsMaxValuesToTheContractMaximum(t *testing.T) {
+	server := newAuditServer(t, map[string]interface{}{
+		"took": 1,
+		"hits": map[string]interface{}{"total": map[string]interface{}{"value": 0, "relation": "eq"}},
+	})
+	defer server.Close()
+
+	maxValues := 50000
+	if _, err := auditHandler(t, server.URL).QueryAuditLogFilterValues(
+		context.Background(), gen.QueryAuditLogFilterValuesRequestObject{
+			Body: &gen.AuditLogFilterValuesRequest{
+				Filter:    "actor.id",
+				Query:     *auditRequestBody(),
+				MaxValues: &maxValues,
+			},
+		}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	aggs, ok := server.searchBody["aggs"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("search body has no aggregations: %v", server.searchBody)
+	}
+	terms := aggs["values"].(map[string]interface{})["terms"].(map[string]interface{})
+	if got := terms["size"]; got != float64(maxAuditFilterValues) {
+		t.Errorf("terms size = %v, want it clamped to %d", got, maxAuditFilterValues)
+	}
+}
+
 func TestQueryAuditLogFilterValues_RejectsAnUnknownFilter(t *testing.T) {
 	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 
@@ -329,7 +379,10 @@ func TestQueryAuditLogFilterValues_ReturnsValuesInOrder(t *testing.T) {
 					{"key": "user-2", "doc_count": 4},
 				},
 			},
-			"total_values": map[string]interface{}{"value": 2},
+			"total_values": map[string]interface{}{
+				"doc_count": 14,
+				"matching":  map[string]interface{}{"value": 2},
+			},
 		},
 	}
 
@@ -373,8 +426,11 @@ func TestQueryAuditLogFilterValues_IgnoresTheNamedFiltersOwnSelections(t *testin
 		"timed_out": false,
 		"hits":      map[string]interface{}{"total": map[string]interface{}{"value": 0, "relation": "eq"}},
 		"aggregations": map[string]interface{}{
-			"values":       map[string]interface{}{"buckets": []map[string]interface{}{}},
-			"total_values": map[string]interface{}{"value": 0},
+			"values": map[string]interface{}{"buckets": []map[string]interface{}{}},
+			"total_values": map[string]interface{}{
+				"doc_count": 0,
+				"matching":  map[string]interface{}{"value": 0},
+			},
 		},
 	})
 	defer server.Close()
@@ -411,8 +467,11 @@ func TestQueryAuditLogFilterValues_IgnoresRecordQueryControls(t *testing.T) {
 		"timed_out": false,
 		"hits":      map[string]interface{}{"total": map[string]interface{}{"value": 0, "relation": "eq"}},
 		"aggregations": map[string]interface{}{
-			"values":       map[string]interface{}{"buckets": []map[string]interface{}{}},
-			"total_values": map[string]interface{}{"value": 0},
+			"values": map[string]interface{}{"buckets": []map[string]interface{}{}},
+			"total_values": map[string]interface{}{
+				"doc_count": 0,
+				"matching":  map[string]interface{}{"value": 0},
+			},
 		},
 	})
 	defer server.Close()

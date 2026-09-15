@@ -44,6 +44,8 @@ spec:
           value: "{{ .Values.openSearchSetup.dataRetentionTime.k8sEvents }}"
         - name: AUDIT_LOGS_MIN_INDEX_AGE
           value: "{{ .Values.openSearchSetup.dataRetentionTime.auditLogs }}"
+        - name: AUDIT_LOGS_INDEX_PREFIX
+          value: "{{ .Values.auditLogs.indexPrefix }}"
         image: {{ include "observability-logs-opensearch.image" (dict "image" .Values.openSearchSetup.image "context" .) | quote }}
         imagePullPolicy: {{ .Values.openSearchSetup.image.pullPolicy | default "IfNotPresent" }}
         resources:

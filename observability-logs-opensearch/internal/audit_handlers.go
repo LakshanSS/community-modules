@@ -12,6 +12,14 @@ import (
 	"github.com/openchoreo/community-modules/observability-logs-opensearch/internal/opensearch"
 )
 
+// Ceilings the contract sets on a request. The generated server does not enforce
+// them, so an over-large value is clamped rather than passed to OpenSearch.
+const (
+	maxAuditLimit            = 1000
+	defaultAuditFilterValues = 100
+	maxAuditFilterValues     = 1000
+)
+
 // auditFilterFields maps a contract filter name onto the field it is stored at.
 var auditFilterFields = map[gen.AuditLogFilterValuesRequestFilter]string{
 	"actor.id":         "actor.id",
@@ -163,9 +171,9 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 	if body.ValueSearch != nil {
 		valueSearch = *body.ValueSearch
 	}
-	maxValues := 100
-	if body.MaxValues != nil {
-		maxValues = *body.MaxValues
+	maxValues := defaultAuditFilterValues
+	if body.MaxValues != nil && *body.MaxValues > 0 {
+		maxValues = min(*body.MaxValues, maxAuditFilterValues)
 	}
 
 	query := h.auditQueryBuilder.BuildAuditFilterValuesQuery(params, field, valueSearch, maxValues)
@@ -267,7 +275,7 @@ func toAuditLogsQueryParams(body *gen.AuditLogsQueryRequest) opensearch.AuditLog
 		params.SearchPhrase = *body.SearchPhrase
 	}
 	if body.Limit != nil && *body.Limit > 0 {
-		params.Limit = *body.Limit
+		params.Limit = min(*body.Limit, maxAuditLimit)
 	}
 	if body.SortOrder != nil {
 		params.SortOrder = string(*body.SortOrder)

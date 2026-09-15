@@ -208,6 +208,11 @@ k8sEventsIndexTemplate='
   }
 }'
 
+# The prefix the collector writes audit indices under. The mapping template and the
+# retention policy below have to match it: applied to a pattern nothing is written to,
+# records land dynamically mapped and never expire.
+auditLogsIndexPattern="${AUDIT_LOGS_INDEX_PREFIX:-audit-logs-}*"
+
 # Template for indices which hold audit records.
 #
 # Applied on every install, including ones that never enable audit collection: an
@@ -228,7 +233,7 @@ k8sEventsIndexTemplate='
 auditLogsIndexTemplate='
 {
   "index_patterns": [
-    "audit-logs-*"
+    "'"$auditLogsIndexPattern"'"
   ],
   "template": {
     "settings": {
@@ -598,16 +603,18 @@ auditLogsIsmPolicy='{
     ],
     "ism_template": [
       {
-        "index_patterns": ["audit-logs-*"],
+        "index_patterns": ["'"$auditLogsIndexPattern"'"],
         "priority": 100
       }
     ]
   }
 }'
 
-# Array to hold policy names and their definitions
-# Format: (ismPolicyName1 ismPolicyDefinition1 ismPolicyName2 ismPolicyDefinition2 ...)
-ismPolicies=("container-logs" "containerLogsIsmPolicy" "k8s-events" "k8sEventsIsmPolicy" "audit-logs" "auditLogsIsmPolicy")
+# Array to hold policy names, their definitions and the indices they manage. The index
+# pattern is carried here rather than derived from the policy name because the audit
+# prefix is configurable, so the two can differ.
+# Format: (ismPolicyName1 ismPolicyDefinition1 ismIndexPattern1 ...)
+ismPolicies=("container-logs" "containerLogsIsmPolicy" "container-logs-*" "k8s-events" "k8sEventsIsmPolicy" "k8s-events-*" "audit-logs" "auditLogsIsmPolicy" "$auditLogsIndexPattern")
 
 # Function to normalize JSON for comparison (removes whitespace differences)
 normalize_json() {
@@ -616,7 +623,18 @@ normalize_json() {
 
 reconcile_ism_policy_indices() {
     local policyName="$1"
-    local indexPattern="$policyName-*"
+    local indexPattern="$2"
+
+    # A pattern that matched everything would attach this policy to every index in the
+    # cluster, expiring other signals on this policy's schedule. Nothing undoes that, so
+    # refuse rather than reconcile.
+    case "$indexPattern" in
+        ""|"*")
+            echo "Refusing to reconcile ISM policy $policyName against index pattern '$indexPattern'."
+            exit 1
+            ;;
+    esac
+
     local response
     local indicesWithPolicies
     local indexName
@@ -687,9 +705,10 @@ reconcile_ism_policy_indices() {
 }
 
 # Create or update ISM policies through a loop
-for ((i=0; i<${#ismPolicies[@]}; i+=2)); do
+for ((i=0; i<${#ismPolicies[@]}; i+=3)); do
     ismPolicyName="${ismPolicies[i]}"
     ismPolicyDefinition="${ismPolicies[i+1]}"
+    ismIndexPattern="${ismPolicies[i+2]}"
     ismPolicyContent="${!ismPolicyDefinition}"
 
     echo "Processing ISM policy: $ismPolicyName"
@@ -783,7 +802,7 @@ for ((i=0; i<${#ismPolicies[@]}; i+=2)); do
         exit 1
     fi
 
-    reconcile_ism_policy_indices "$ismPolicyName"
+    reconcile_ism_policy_indices "$ismPolicyName" "$ismIndexPattern"
 
     echo ""
 done

@@ -111,10 +111,22 @@ func ParseAuditRecord(hit Hit) (AuditRecord, error) {
 		return AuditRecord{}, fmt.Errorf("failed to parse document: %w", err)
 	}
 
-	// Required on every record, so a document missing them was not written by an
-	// audit producer.
-	if record.EventID == "" {
-		return AuditRecord{}, fmt.Errorf("document has no event_id")
+	// Identity and attribution: a blank here is a corrupt document rather than a record
+	// of nothing, so it is not worth returning.
+	//
+	// action and category are deliberately not checked. A producer that rejects a
+	// request before routing resolves one emits them empty, and those are the
+	// unauthenticated records an audit reader most wants to see.
+	for _, required := range []struct{ field, value string }{
+		{"schema_version", record.SchemaVersion},
+		{"event_id", record.EventID},
+		{"actor.type", record.Actor.Type},
+		{"actor.id", record.Actor.ID},
+		{"result", record.Result},
+	} {
+		if required.value == "" {
+			return AuditRecord{}, fmt.Errorf("document has no %s", required.field)
+		}
 	}
 	if record.EventTime.IsZero() {
 		return AuditRecord{}, fmt.Errorf("document has no event_time")
