@@ -61,7 +61,7 @@ func eventsSearchServer(t *testing.T) *httptest.Server {
 }
 
 func TestQueryEvents_NilBody(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, testLogger())
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: nil})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -72,7 +72,7 @@ func TestQueryEvents_NilBody(t *testing.T) {
 }
 
 func TestQueryEvents_ComponentScope_EmptyNamespace(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, testLogger())
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 
 	searchScope := gen.EventsQueryRequest_SearchScope{}
 	_ = searchScope.FromComponentSearchScope(gen.ComponentSearchScope{Namespace: ""})
@@ -97,7 +97,7 @@ func TestQueryEvents_ComponentScope_Success(t *testing.T) {
 
 	osClient := newTestOSClient(t, server.URL)
 	eqb := osearch.NewQueryBuilder("k8s-events-")
-	handler := NewLogsHandler(osClient, nil, eqb, nil, testLogger())
+	handler := NewLogsHandler(osClient, nil, eqb, nil, nil, testLogger())
 
 	componentUID := "a022c8af-78c8-4fa2-a9fd-51eb8579ecb2"
 	searchScope := gen.EventsQueryRequest_SearchScope{}
@@ -153,7 +153,7 @@ func TestQueryEvents_WorkflowScope_Success(t *testing.T) {
 
 	osClient := newTestOSClient(t, server.URL)
 	eqb := osearch.NewQueryBuilder("k8s-events-")
-	handler := NewLogsHandler(osClient, nil, eqb, nil, testLogger())
+	handler := NewLogsHandler(osClient, nil, eqb, nil, nil, testLogger())
 
 	workflowRunName := "build-run-123"
 	searchScope := gen.EventsQueryRequest_SearchScope{}
@@ -187,7 +187,7 @@ func TestQueryEvents_SearchError(t *testing.T) {
 
 	osClient := newTestOSClient(t, server.URL)
 	eqb := osearch.NewQueryBuilder("k8s-events-")
-	handler := NewLogsHandler(osClient, nil, eqb, nil, testLogger())
+	handler := NewLogsHandler(osClient, nil, eqb, nil, nil, testLogger())
 
 	searchScope := gen.EventsQueryRequest_SearchScope{}
 	_ = searchScope.FromComponentSearchScope(gen.ComponentSearchScope{Namespace: "default"})

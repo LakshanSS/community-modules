@@ -208,10 +208,184 @@ k8sEventsIndexTemplate='
   }
 }'
 
+# The prefix the collector writes audit indices under. The template and policy below
+# must match it, or records land dynamically mapped and never expire.
+auditLogsIndexPrefix="${AUDIT_LOGS_INDEX_PREFIX:-audit-logs-}"
+
+# Must be a name OpenSearch accepts: a wildcard or comma would widen the pattern onto
+# indices holding other signals, which then answer to the audit mappings and are deleted
+# on the audit schedule. 244 leaves room for the collector's -YYYY-MM-DD within 255 bytes.
+if [[ ! "$auditLogsIndexPrefix" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || [ "${#auditLogsIndexPrefix}" -gt 244 ]; then
+    echo "Invalid audit log index prefix '$auditLogsIndexPrefix': expected at most 244 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit."
+    exit 1
+fi
+
+auditLogsIndexPattern="${auditLogsIndexPrefix}*"
+
+# Template for indices which hold audit records. Applied even where audit collection is
+# off, because shaping the destination afterwards does not repair indices already written.
+#
+# The field set is authoritative in internal/server/middleware/audit/types.go in
+# openchoreo/openchoreo, not here: under "dynamic": "false" a field missing from this
+# list is stored but unindexed, so it silently stops being filterable.
+#
+# actor.entitlements keys vary by subject kind, so they cannot be declared ahead of time.
+# Each claim is copied into actor.entitlement_values, which the filter and value picker
+# read instead.
+auditLogsIndexTemplate='
+{
+  "index_patterns": [
+    "'"$auditLogsIndexPattern"'"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 1
+    },
+    "mappings": {
+      "dynamic": "false",
+      "dynamic_templates": [
+        {
+          "entitlement_claims_as_keywords": {
+            "path_match": "actor.entitlements.*",
+            "match_mapping_type": "string",
+            "mapping": {
+              "type": "keyword",
+              "ignore_above": 256,
+              "copy_to": "actor.entitlement_values"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "event_time": {
+          "type": "date"
+        },
+        "schema_version": {
+          "type": "keyword"
+        },
+        "event_id": {
+          "type": "keyword"
+        },
+        "action": {
+          "type": "keyword"
+        },
+        "category": {
+          "type": "keyword"
+        },
+        "result": {
+          "type": "keyword"
+        },
+        "request_id": {
+          "type": "keyword"
+        },
+        "source_ip": {
+          "type": "keyword"
+        },
+        "user_agent": {
+          "type": "keyword"
+        },
+        "producer": {
+          "type": "keyword"
+        },
+        "surface": {
+          "type": "keyword"
+        },
+        "operation_id": {
+          "type": "keyword"
+        },
+        "actor": {
+          "properties": {
+            "type": {
+              "type": "keyword"
+            },
+            "id": {
+              "type": "keyword"
+            },
+            "issuer": {
+              "type": "keyword"
+            },
+            "session_id": {
+              "type": "keyword"
+            },
+            "entitlements": {
+              "type": "object",
+              "dynamic": true
+            },
+            "entitlement_values": {
+              "type": "keyword"
+            }
+          }
+        },
+        "http": {
+          "properties": {
+            "method": {
+              "type": "keyword"
+            },
+            "path": {
+              "type": "keyword"
+            }
+          }
+        },
+        "resource": {
+          "properties": {
+            "type": {
+              "type": "keyword"
+            },
+            "namespace": {
+              "type": "keyword"
+            },
+            "environment": {
+              "type": "keyword"
+            },
+            "project": {
+              "type": "keyword"
+            },
+            "component": {
+              "type": "keyword"
+            },
+            "resource": {
+              "type": "keyword"
+            },
+            "uid": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "kubernetes": {
+          "properties": {
+            "namespace_name": {
+              "type": "keyword"
+            },
+            "pod_name": {
+              "type": "keyword"
+            },
+            "container_name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "openchoreo_cluster_instance": {
+          "type": "keyword"
+        },
+        "log": {
+          "type": "wildcard"
+        }
+      }
+    }
+  }
+}'
+
 # The following array holds pairs of index template names and their definitions. Define more templates above
 # and add them to this array.
 # Format: (templateName1 templateDefinition1 templateName2 templateDefinition2 ...)
-indexTemplates=("container-logs" "containerLogsIndexTemplate" "k8s-events" "k8sEventsIndexTemplate")
+indexTemplates=("container-logs" "containerLogsIndexTemplate" "k8s-events" "k8sEventsIndexTemplate" "audit-logs" "auditLogsIndexTemplate")
 
 # Create index templates through a loop using the above array
 echo "Creating index templates..."
@@ -322,6 +496,9 @@ echo -e "\nManaging ISM Policies..."
 # Read retention periods from environment variables or use defaults
 containerLogsRetention="${CONTAINER_LOGS_MIN_INDEX_AGE:-30d}"
 k8sEventsRetention="${K8S_EVENTS_MIN_INDEX_AGE:-30d}"
+# Kept far longer than operational logs, which is why audit is a separate stream rather
+# than a filter over the container logs. Not expected to match the two above.
+auditLogsRetention="${AUDIT_LOGS_MIN_INDEX_AGE:-365d}"
 
 # container logs
 containerLogsIsmPolicy='{
@@ -397,9 +574,47 @@ k8sEventsIsmPolicy='{
   }
 }'
 
-# Array to hold policy names and their definitions
-# Format: (ismPolicyName1 ismPolicyDefinition1 ismPolicyName2 ismPolicyDefinition2 ...)
-ismPolicies=("container-logs" "containerLogsIsmPolicy" "k8s-events" "k8sEventsIsmPolicy")
+# audit logs
+auditLogsIsmPolicy='{
+  "policy": {
+    "description": "Delete audit logs older than '"$auditLogsRetention"'",
+    "default_state": "active",
+    "states": [
+      {
+        "name": "active",
+        "actions": [],
+        "transitions": [
+          {
+            "state_name": "delete",
+            "conditions": {
+              "min_index_age": "'"$auditLogsRetention"'"
+            }
+          }
+        ]
+      },
+      {
+        "name": "delete",
+        "actions": [
+          {
+            "delete": {}
+          }
+        ],
+        "transitions": []
+      }
+    ],
+    "ism_template": [
+      {
+        "index_patterns": ["'"$auditLogsIndexPattern"'"],
+        "priority": 100
+      }
+    ]
+  }
+}'
+
+# Policy names, definitions and the indices they manage. The pattern is carried here
+# rather than derived from the policy name, which the configurable audit prefix can differ from.
+# Format: (ismPolicyName1 ismPolicyDefinition1 ismIndexPattern1 ...)
+ismPolicies=("container-logs" "containerLogsIsmPolicy" "container-logs-*" "k8s-events" "k8sEventsIsmPolicy" "k8s-events-*" "audit-logs" "auditLogsIsmPolicy" "$auditLogsIndexPattern")
 
 # Function to normalize JSON for comparison (removes whitespace differences)
 normalize_json() {
@@ -408,7 +623,17 @@ normalize_json() {
 
 reconcile_ism_policy_indices() {
     local policyName="$1"
-    local indexPattern="$policyName-*"
+    local indexPattern="$2"
+
+    # A pattern matching everything would expire other signals on this policy's
+    # schedule, which nothing undoes. Refuse anything without a literal prefix.
+    case "$indexPattern" in
+        ""|\**|*,*)
+            echo "Refusing to reconcile ISM policy $policyName against index pattern '$indexPattern'."
+            exit 1
+            ;;
+    esac
+
     local response
     local indicesWithPolicies
     local indexName
@@ -479,9 +704,10 @@ reconcile_ism_policy_indices() {
 }
 
 # Create or update ISM policies through a loop
-for ((i=0; i<${#ismPolicies[@]}; i+=2)); do
+for ((i=0; i<${#ismPolicies[@]}; i+=3)); do
     ismPolicyName="${ismPolicies[i]}"
     ismPolicyDefinition="${ismPolicies[i+1]}"
+    ismIndexPattern="${ismPolicies[i+2]}"
     ismPolicyContent="${!ismPolicyDefinition}"
 
     echo "Processing ISM policy: $ismPolicyName"
@@ -575,7 +801,7 @@ for ((i=0; i<${#ismPolicies[@]}; i+=2)); do
         exit 1
     fi
 
-    reconcile_ism_policy_indices "$ismPolicyName"
+    reconcile_ism_policy_indices "$ismPolicyName" "$ismIndexPattern"
 
     echo ""
 done

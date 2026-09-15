@@ -22,6 +22,10 @@ type SearchResponse struct {
 	} `json:"hits"`
 	Took     int  `json:"took"`
 	TimedOut bool `json:"timed_out"`
+
+	// Raw so each caller unmarshals only the shape it asked for, rather than this
+	// type growing a union of every aggregation.
+	Aggregations json.RawMessage `json:"aggregations,omitempty"`
 }
 
 // Hit represents a single search result hit.

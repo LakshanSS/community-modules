@@ -20,6 +20,7 @@ type Config struct {
 	OpenSearchPassword          string
 	OpenSearchIndexPrefix       string
 	OpenSearchEventsIndexPrefix string
+	OpenSearchAuditIndexPrefix  string
 	TLSSkipVerify               bool
 	ObserverURL                 string
 	LogLevel                    slog.Level
@@ -33,6 +34,7 @@ func LoadConfig() (*Config, error) {
 	openSearchPassword := getEnv("OPENSEARCH_PASSWORD", "")
 	openSearchIndexPrefix := getEnv("OPENSEARCH_INDEX_PREFIX", "container-logs-")
 	openSearchEventsIndexPrefix := getEnv("OPENSEARCH_EVENTS_INDEX_PREFIX", "k8s-events-")
+	openSearchAuditIndexPrefix := getEnv("OPENSEARCH_AUDIT_INDEX_PREFIX", "audit-logs-")
 	observerURL := getEnv("OBSERVER_URL", "")
 
 	tlsSkipVerify := true
@@ -89,6 +91,7 @@ func LoadConfig() (*Config, error) {
 		OpenSearchPassword:          openSearchPassword,
 		OpenSearchIndexPrefix:       openSearchIndexPrefix,
 		OpenSearchEventsIndexPrefix: openSearchEventsIndexPrefix,
+		OpenSearchAuditIndexPrefix:  openSearchAuditIndexPrefix,
 		TLSSkipVerify:               tlsSkipVerify,
 		ObserverURL:                 observerURL,
 		LogLevel:                    logLevel,

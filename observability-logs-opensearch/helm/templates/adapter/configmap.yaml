@@ -14,5 +14,6 @@ data:
   OPENSEARCH_ADDRESS: "https://opensearch:9200"
   OPENSEARCH_INDEX_PREFIX: "container-logs-"
   OPENSEARCH_EVENTS_INDEX_PREFIX: "k8s-events-"
+  OPENSEARCH_AUDIT_INDEX_PREFIX: {{ include "observability-logs-opensearch.auditIndexPrefix" . | quote }}
   OBSERVER_URL: {{ .Values.adapter.observerUrl | quote }}
 {{- end }}

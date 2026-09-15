@@ -28,3 +28,25 @@ Parameters:
 {{- end -}}
 {{- printf "%s:%s" $repo (.image.tag | default .context.Chart.AppVersion) -}}
 {{- end }}
+
+{{/*
+Return auditLogs.indexPrefix, failing the render unless OpenSearch accepts it as an
+index name prefix. It becomes an index pattern in the collector, the mapping template
+and the retention policy, so a wildcard or comma would widen all three onto other
+signals' indices. 244 leaves room for the collector's -YYYY-MM-DD within 255 bytes.
+
+Usage: {{ include "observability-logs-opensearch.auditIndexPrefix" . }}
+*/}}
+{{- define "observability-logs-opensearch.auditIndexPrefix" -}}
+{{- $prefix := .Values.auditLogs.indexPrefix -}}
+{{- if not $prefix -}}
+{{- fail "auditLogs.indexPrefix must not be empty: the collector would write to indices the template, the retention policy and the adapter do not read, each falling back to audit-logs-" -}}
+{{- end -}}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9._-]*$" $prefix) -}}
+{{- fail (printf "auditLogs.indexPrefix %q must start with a lowercase letter or digit and contain only lowercase letters, digits, '.', '_' and '-'" $prefix) -}}
+{{- end -}}
+{{- if gt (len $prefix) 244 -}}
+{{- fail (printf "auditLogs.indexPrefix must be at most 244 characters, got %d" (len $prefix)) -}}
+{{- end -}}
+{{- $prefix -}}
+{{- end }}

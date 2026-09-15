@@ -105,8 +105,9 @@ func (c *Client) Search(ctx context.Context, indices []string, query map[string]
 	}
 
 	response := &SearchResponse{
-		Took:     resp.Took,
-		TimedOut: resp.Timeout,
+		Took:         resp.Took,
+		TimedOut:     resp.Timeout,
+		Aggregations: resp.Aggregations,
 	}
 	response.Hits.Total.Value = resp.Hits.Total.Value
 	response.Hits.Total.Relation = resp.Hits.Total.Relation

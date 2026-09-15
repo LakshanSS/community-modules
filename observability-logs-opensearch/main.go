@@ -68,8 +68,16 @@ func main() {
 
 	queryBuilder := opensearch.NewQueryBuilder(cfg.OpenSearchIndexPrefix)
 	eventsQueryBuilder := opensearch.NewQueryBuilder(cfg.OpenSearchEventsIndexPrefix)
+	auditQueryBuilder := opensearch.NewQueryBuilder(cfg.OpenSearchAuditIndexPrefix)
 	observerClient := observer.NewClient(cfg.ObserverURL)
-	logsHandler := app.NewLogsHandler(osClient, queryBuilder, eventsQueryBuilder, observerClient, logger)
+	logsHandler := app.NewLogsHandler(
+		osClient,
+		queryBuilder,
+		eventsQueryBuilder,
+		auditQueryBuilder,
+		observerClient,
+		logger,
+	)
 	srv := app.NewServer(cfg.ServerPort, logsHandler, logger)
 
 	errCh := make(chan error, 1)

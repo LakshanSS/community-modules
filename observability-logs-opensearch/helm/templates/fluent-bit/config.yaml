@@ -14,6 +14,9 @@ data:
         Daemon        Off
         Log_Level     info
         Parsers_File  parsers.conf
+{{- if .Values.auditLogs.enabled }}
+        Parsers_File  /fluent-bit/etc/conf/audit-parsers.conf
+{{- end }}
         Plugins_File  plugins.conf
         HTTP_Server   On
         HTTP_Listen   0.0.0.0
@@ -50,6 +53,23 @@ data:
         Name modify
         Match kube.*
         Set openchoreo_cluster_instance {{ (index .Values "fluent-bit").clusterInstance }}
+{{- if .Values.auditLogs.enabled }}
+
+{{- range $p := .Values.auditLogs.producers }}
+    [FILTER]
+        Name          rewrite_tag
+        Match         kube.var.log.containers.*_{{ $p.namespace }}_{{ $p.container }}-*
+        Rule          $log AUDIT-LOG(?!-) audit.{{ $p.producer }} false
+        Emitter_Name  audit_emitter_{{ $p.producer }}
+{{ end }}
+    [FILTER]
+        Name          parser
+        Match         audit.*
+        Key_Name      log
+        Parser        audit_json
+        Reserve_Data  On
+        Preserve_Key  On
+{{- end }}
 
     [OUTPUT]
         Name opensearch
@@ -67,6 +87,26 @@ data:
         tls On
         tls.verify Off
         tls.vhost {{ index .Values "fluent-bit" "openSearchVHost" | default "opensearch" }}
+{{- if .Values.auditLogs.enabled }}
+
+{{- /* The output above matches kube.*, so audit records do not also land there. */}}
+    [OUTPUT]
+        Name opensearch
+        Host {{ index .Values "fluent-bit" "openSearchHost" }}
+        Port {{ index .Values "fluent-bit" "openSearchPort" }}
+        Generate_ID On
+        HTTP_Passwd ${OPENSEARCH_PASSWORD}
+        HTTP_User ${OPENSEARCH_USERNAME}
+        Logstash_Format On
+        Logstash_DateFormat %Y-%m-%d
+        Logstash_Prefix {{ include "observability-logs-opensearch.auditIndexPrefix" . | trimSuffix "-" }}
+        Match audit.*
+        Replace_Dots On
+        Suppress_Type_Name On
+        tls On
+        tls.verify Off
+        tls.vhost {{ index .Values "fluent-bit" "openSearchVHost" | default "opensearch" }}
+{{- end }}
 
   parsers.conf: |
     [PARSER]
@@ -75,4 +115,12 @@ data:
         Time_Keep Off
         Time_Key time
         Time_Format %Y-%m-%dT%H:%M:%S.%L
+{{- if .Values.auditLogs.enabled }}
+
+
+  audit-parsers.conf: |
+    [PARSER]
+        Name   audit_json
+        Format json
+{{- end }}
 {{- end }}

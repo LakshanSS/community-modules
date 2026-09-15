@@ -24,6 +24,7 @@ type LogsHandler struct {
 	osClient           *opensearch.Client
 	queryBuilder       *opensearch.QueryBuilder
 	eventsQueryBuilder *opensearch.QueryBuilder
+	auditQueryBuilder  *opensearch.QueryBuilder
 	observerClient     *observer.Client
 	logger             *slog.Logger
 }
@@ -33,6 +34,7 @@ func NewLogsHandler(
 	osClient *opensearch.Client,
 	queryBuilder *opensearch.QueryBuilder,
 	eventsQueryBuilder *opensearch.QueryBuilder,
+	auditQueryBuilder *opensearch.QueryBuilder,
 	observerClient *observer.Client,
 	logger *slog.Logger,
 ) *LogsHandler {
@@ -40,6 +42,7 @@ func NewLogsHandler(
 		osClient:           osClient,
 		queryBuilder:       queryBuilder,
 		eventsQueryBuilder: eventsQueryBuilder,
+		auditQueryBuilder:  auditQueryBuilder,
 		observerClient:     observerClient,
 		logger:             logger,
 	}
@@ -665,7 +668,7 @@ func (h *LogsHandler) HandleAlertWebhook(_ context.Context, request gen.HandleAl
 		h.logger.Warn("Alert webhook received with nil body")
 		return gen.HandleAlertWebhook200JSONResponse{
 			Message: ptr("alert webhook received successfully"),
-			Status:  ptr(gen.Success),
+			Status:  ptr(gen.AlertWebhookResponseStatusSuccess),
 		}, nil
 	}
 	body := *request.Body
@@ -675,7 +678,7 @@ func (h *LogsHandler) HandleAlertWebhook(_ context.Context, request gen.HandleAl
 		h.logger.Error("Failed to parse alert webhook body", slog.Any("error", err))
 		return gen.HandleAlertWebhook200JSONResponse{
 			Message: ptr("alert webhook received successfully"),
-			Status:  ptr(gen.Success),
+			Status:  ptr(gen.AlertWebhookResponseStatusSuccess),
 		}, nil
 	}
 
@@ -692,7 +695,7 @@ func (h *LogsHandler) HandleAlertWebhook(_ context.Context, request gen.HandleAl
 
 	return gen.HandleAlertWebhook200JSONResponse{
 		Message: ptr("alert webhook received successfully"),
-		Status:  ptr(gen.Success),
+		Status:  ptr(gen.AlertWebhookResponseStatusSuccess),
 	}, nil
 }
 
