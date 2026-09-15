@@ -12,8 +12,8 @@ import (
 	"github.com/openchoreo/community-modules/observability-logs-opensearch/internal/opensearch"
 )
 
-// Ceilings the contract sets on a request. The generated server does not enforce
-// them, so an over-large value is clamped rather than passed to OpenSearch.
+// Contract ceilings. The generated server does not enforce them, so an over-large
+// value is clamped rather than passed to OpenSearch.
 const (
 	maxAuditLimit            = 1000
 	defaultAuditFilterValues = 100
@@ -26,8 +26,7 @@ var auditFilterFields = map[gen.AuditLogFilterValuesRequestFilter]string{
 	"actor.type":       "actor.type",
 	"actor.issuer":     "actor.issuer",
 	"actor.session_id": "actor.session_id",
-	// The claim key varies by subject kind, so this reads the copy the index template
-	// collects every claim's values into.
+	// The claim key varies by subject kind, so this reads the index template's copy.
 	"actor.entitlements":   opensearch.AuditEntitlementValuesField,
 	"resource.type":        "resource.type",
 	"resource.namespace":   "resource.namespace",
@@ -162,8 +161,8 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 		}, nil
 	}
 
-	// Dropping the named filter's own selections keeps the picker offering the
-	// alternatives to what is already selected.
+	// Dropping the filter's own selections keeps the picker offering alternatives to
+	// what is already selected.
 	params := toAuditLogsQueryParams(&body.Query)
 	clearAuditFilter(&params, body.Filter)
 
@@ -204,8 +203,7 @@ func (h *LogsHandler) QueryAuditLogFilterValues(
 		}, nil
 	}
 
-	// Covers a search too long to have been sent as an aggregation regex; applying it
-	// twice is harmless.
+	// Covers a search too long to push down as an aggregation regex.
 	values = opensearch.FilterValuesBySearch(values, valueSearch)
 
 	genValues := make([]gen.AuditLogFilterValue, 0, len(values))
@@ -253,8 +251,6 @@ func toAuditLogsQueryParams(body *gen.AuditLogsQueryRequest) opensearch.AuditLog
 		params.ResourceNames = derefSlice(body.Resource.Name)
 	}
 
-	// The closed enums carry generated types rather than plain strings, so each needs
-	// its own conversion.
 	if body.Category != nil {
 		for _, c := range *body.Category {
 			params.Categories = append(params.Categories, string(c))

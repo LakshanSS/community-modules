@@ -23,8 +23,8 @@ type SearchResponse struct {
 	Took     int  `json:"took"`
 	TimedOut bool `json:"timed_out"`
 
-	// Aggregations is carried raw so each caller unmarshals only the shape it
-	// asked for, rather than this type growing a union of every aggregation.
+	// Raw so each caller unmarshals only the shape it asked for, rather than this
+	// type growing a union of every aggregation.
 	Aggregations json.RawMessage `json:"aggregations,omitempty"`
 }
 

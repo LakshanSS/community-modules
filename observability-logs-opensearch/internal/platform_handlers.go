@@ -126,9 +126,7 @@ func (h *LogsHandler) QueryPlatformLogs(
 }
 
 // QueryPlatformLogFilterValues implements POST /api/v1alpha1/platform-logs/filter-values.
-//
-// The contract sanctions 501 for an adapter that serves platform logs but does not
-// aggregate them. An empty 200 would instead claim the filter has no values.
+// The contract sanctions 501 here; an empty 200 would claim the filter has no values.
 func (h *LogsHandler) QueryPlatformLogFilterValues(
 	_ context.Context, _ gen.QueryPlatformLogFilterValuesRequestObject,
 ) (gen.QueryPlatformLogFilterValuesResponseObject, error) {

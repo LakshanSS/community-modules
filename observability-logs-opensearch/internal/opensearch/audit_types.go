@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// AuditRecord is one stored audit event. The json tags are the record's own
-// snake_case spelling, so a stored document unmarshals into this directly.
+// AuditRecord is one stored audit event. The json tags are the record's own snake_case
+// spelling, so a stored document unmarshals into this directly.
 type AuditRecord struct {
 	SchemaVersion string         `json:"schema_version"`
 	EventID       string         `json:"event_id"`
@@ -28,10 +28,6 @@ type AuditRecord struct {
 	HTTP          *AuditHTTPInfo `json:"http"`
 	Resource      *AuditResource `json:"resource"`
 	Metadata      map[string]any `json:"metadata"`
-
-	// The stored document also carries the raw ingested line in `log`. The contract
-	// does not return it, but searchPhrase matches against it, so the index mapping
-	// and the collector's Preserve_Key are not dead weight.
 
 	// Stamped by the collector rather than the emitting service, so they are worth
 	// comparing against the record's own producer claim.
@@ -98,8 +94,7 @@ type AuditTimelineBucket struct {
 }
 
 // ParseAuditRecord reads a search hit into an audit record, erroring rather than
-// returning a zero-valued one: a blank actor at the epoch reads as a real finding of
-// "nobody, at no time".
+// returning a zero-valued one that would read as a real finding.
 func ParseAuditRecord(hit Hit) (AuditRecord, error) {
 	raw, err := json.Marshal(hit.Source)
 	if err != nil {
@@ -111,12 +106,9 @@ func ParseAuditRecord(hit Hit) (AuditRecord, error) {
 		return AuditRecord{}, fmt.Errorf("failed to parse document: %w", err)
 	}
 
-	// Identity and attribution: a blank here is a corrupt document rather than a record
-	// of nothing, so it is not worth returning.
-	//
-	// action and category are deliberately not checked. A producer that rejects a
-	// request before routing resolves one emits them empty, and those are the
-	// unauthenticated records an audit reader most wants to see.
+	// action and category are deliberately absent: a producer that rejects a request
+	// before routing resolves one emits them empty, and those unauthenticated records
+	// are worth keeping.
 	for _, required := range []struct{ field, value string }{
 		{"schema_version", record.SchemaVersion},
 		{"event_id", record.EventID},

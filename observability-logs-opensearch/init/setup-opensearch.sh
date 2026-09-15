@@ -208,28 +208,30 @@ k8sEventsIndexTemplate='
   }
 }'
 
-# The prefix the collector writes audit indices under. The mapping template and the
-# retention policy below have to match it: applied to a pattern nothing is written to,
-# records land dynamically mapped and never expire.
-auditLogsIndexPattern="${AUDIT_LOGS_INDEX_PREFIX:-audit-logs-}*"
+# The prefix the collector writes audit indices under. The template and policy below
+# must match it, or records land dynamically mapped and never expire.
+auditLogsIndexPrefix="${AUDIT_LOGS_INDEX_PREFIX:-audit-logs-}"
 
-# Template for indices which hold audit records.
+# Must be a name OpenSearch accepts: a wildcard or comma would widen the pattern onto
+# indices holding other signals, which then answer to the audit mappings and are deleted
+# on the audit schedule. 244 leaves room for the collector's -YYYY-MM-DD within 255 bytes.
+if [[ ! "$auditLogsIndexPrefix" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || [ "${#auditLogsIndexPrefix}" -gt 244 ]; then
+    echo "Invalid audit log index prefix '$auditLogsIndexPrefix': expected at most 244 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit."
+    exit 1
+fi
+
+auditLogsIndexPattern="${auditLogsIndexPrefix}*"
+
+# Template for indices which hold audit records. Applied even where audit collection is
+# off, because shaping the destination afterwards does not repair indices already written.
 #
-# Applied on every install, including ones that never enable audit collection: an
-# audit-logs-* index created before its template gets dynamic mappings and answers
-# nothing, and shaping the destination afterwards does not repair the indices already
-# written. Against an index pattern that matches nothing, this costs nothing.
+# The field set is authoritative in internal/server/middleware/audit/types.go in
+# openchoreo/openchoreo, not here: under "dynamic": "false" a field missing from this
+# list is stored but unindexed, so it silently stops being filterable.
 #
-# The field set is the published audit record. It is authoritative in
-# internal/server/middleware/audit/types.go in openchoreo/openchoreo, not here - under
-# "dynamic": "false" a field missing from this list is stored but unindexed, so it
-# silently stops being filterable.
-#
-# actor.entitlements is a map whose keys vary by subject kind - groups for a user, sub
-# for a service account - so the keys cannot be declared ahead of time. The map is left
-# dynamic and each claim is copied into actor.entitlement_values, which is what both the
-# filter and the value picker read: a caller filters on an entitlement without having to
-# know which claim carries it.
+# actor.entitlements keys vary by subject kind, so they cannot be declared ahead of time.
+# Each claim is copied into actor.entitlement_values, which the filter and value picker
+# read instead.
 auditLogsIndexTemplate='
 {
   "index_patterns": [
@@ -494,9 +496,8 @@ echo -e "\nManaging ISM Policies..."
 # Read retention periods from environment variables or use defaults
 containerLogsRetention="${CONTAINER_LOGS_MIN_INDEX_AGE:-30d}"
 k8sEventsRetention="${K8S_EVENTS_MIN_INDEX_AGE:-30d}"
-# Audit records are kept far longer than operational logs. Needing a different
-# retention is the reason they are a separate stream rather than a filter over the
-# container logs, so this default is not expected to match the two above.
+# Kept far longer than operational logs, which is why audit is a separate stream rather
+# than a filter over the container logs. Not expected to match the two above.
 auditLogsRetention="${AUDIT_LOGS_MIN_INDEX_AGE:-365d}"
 
 # container logs
@@ -610,9 +611,8 @@ auditLogsIsmPolicy='{
   }
 }'
 
-# Array to hold policy names, their definitions and the indices they manage. The index
-# pattern is carried here rather than derived from the policy name because the audit
-# prefix is configurable, so the two can differ.
+# Policy names, definitions and the indices they manage. The pattern is carried here
+# rather than derived from the policy name, which the configurable audit prefix can differ from.
 # Format: (ismPolicyName1 ismPolicyDefinition1 ismIndexPattern1 ...)
 ismPolicies=("container-logs" "containerLogsIsmPolicy" "container-logs-*" "k8s-events" "k8sEventsIsmPolicy" "k8s-events-*" "audit-logs" "auditLogsIsmPolicy" "$auditLogsIndexPattern")
 
@@ -625,11 +625,10 @@ reconcile_ism_policy_indices() {
     local policyName="$1"
     local indexPattern="$2"
 
-    # A pattern that matched everything would attach this policy to every index in the
-    # cluster, expiring other signals on this policy's schedule. Nothing undoes that, so
-    # refuse rather than reconcile.
+    # A pattern matching everything would expire other signals on this policy's
+    # schedule, which nothing undoes. Refuse anything without a literal prefix.
     case "$indexPattern" in
-        ""|"*")
+        ""|\**|*,*)
             echo "Refusing to reconcile ISM policy $policyName against index pattern '$indexPattern'."
             exit 1
             ;;

@@ -15,10 +15,6 @@ data:
         Log_Level     info
         Parsers_File  parsers.conf
 {{- if .Values.auditLogs.enabled }}
-        # Absolute, unlike the line above: fluent-bit runs with --workdir
-        # /fluent-bit/etc while this ConfigMap is mounted at /fluent-bit/etc/conf,
-        # so a relative name resolves against the image's built-in parsers rather
-        # than against this file.
         Parsers_File  /fluent-bit/etc/conf/audit-parsers.conf
 {{- end }}
         Plugins_File  plugins.conf
@@ -59,28 +55,6 @@ data:
         Set openchoreo_cluster_instance {{ (index .Values "fluent-bit").clusterInstance }}
 {{- if .Values.auditLogs.enabled }}
 
-    # Audit records are moved onto their own tag so they reach their own index,
-    # with their own retention, rather than the container-logs stream.
-    #
-    # The Match is the security control and the Rule is only a discriminator: the
-    # tag derives from the container log filename, which the kubelet writes, so a
-    # pod cannot put itself in this set. Matching on the payload alone would let
-    # any workload forge an audit record by printing one.
-    #
-    # These must stay after both kube.* filters above. Neither re-runs on the
-    # re-emitted audit.* tag, so the kubernetes.* enrichment and the cluster stamp
-    # have to already be on the record when it is moved.
-    #
-    # The regex carries no double quotes on purpose. Rule is split into its four
-    # parts by a tokenizer that treats a double quote as a delimiter, so a pattern
-    # like "msg":"AUDIT-LOG" is torn apart: the regex becomes msg and the new tag
-    # becomes :"AUDIT-LOG". Nothing matches that tag, and with Keep false the
-    # records are dropped from the container-logs stream and then discarded -
-    # silently, because an unroutable tag is not an error.
-    #
-    # The negative lookahead is what keeps AUDIT-LOG-RENDER-FAILED out. That marker
-    # is a diagnostic rather than an audit record, and must stay in container-logs
-    # instead of being filed in the audit index.
 {{- range $p := .Values.auditLogs.producers }}
     [FILTER]
         Name          rewrite_tag
@@ -88,10 +62,6 @@ data:
         Rule          $log AUDIT-LOG(?!-) audit.{{ $p.producer }} false
         Emitter_Name  audit_emitter_{{ $p.producer }}
 {{ end }}
-    # Reserve_Data keeps the kubernetes.* enrichment and the cluster stamp;
-    # Preserve_Key keeps the raw line. The read API no longer returns that line, but
-    # free-text search still matches against it, so dropping it would silently break
-    # searchPhrase rather than just save space.
     [FILTER]
         Name          parser
         Match         audit.*
@@ -119,8 +89,7 @@ data:
         tls.vhost {{ index .Values "fluent-bit" "openSearchVHost" | default "opensearch" }}
 {{- if .Values.auditLogs.enabled }}
 
-    # The container-logs output above matches kube.* and so does not match audit.*,
-    # which is why audit records do not also land there.
+{{- /* The output above matches kube.*, so audit records do not also land there. */}}
     [OUTPUT]
         Name opensearch
         Host {{ index .Values "fluent-bit" "openSearchHost" }}
@@ -130,7 +99,7 @@ data:
         HTTP_User ${OPENSEARCH_USERNAME}
         Logstash_Format On
         Logstash_DateFormat %Y-%m-%d
-        Logstash_Prefix {{ .Values.auditLogs.indexPrefix | trimSuffix "-" }}
+        Logstash_Prefix {{ include "observability-logs-opensearch.auditIndexPrefix" . | trimSuffix "-" }}
         Match audit.*
         Replace_Dots On
         Suppress_Type_Name On
@@ -148,15 +117,8 @@ data:
         Time_Format %Y-%m-%dT%H:%M:%S.%L
 {{- if .Values.auditLogs.enabled }}
 
-  # Kept in its own file rather than appended to parsers.conf above: that file is
-  # not the one fluent-bit loads (see the SERVICE section), and a second name in a
-  # file the collector does read risks colliding with a built-in parser.
+
   audit-parsers.conf: |
-    # No Time_Key: the tail input's cri parser already set the record time, and
-    # Logstash_Format derives the daily index name from it. Re-deriving it from
-    # event_time would file records by a value %z cannot parse out of Go's RFC3339
-    # Z suffix, which mis-files silently rather than failing. @timestamp stays the
-    # time the collector saw the line; event_time is carried as an ordinary field.
     [PARSER]
         Name   audit_json
         Format json

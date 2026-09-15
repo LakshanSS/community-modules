@@ -269,31 +269,6 @@ Needing a different retention is the reason audit is a separate stream rather th
 filter over the container logs, so the two are not expected to match. Changing the value
 and upgrading reconciles the policy onto the indices that already exist.
 
-### Credentials
-
-Audit uses the same OpenSearch credentials as container logs — the
-`opensearch-admin-credentials` secret from [Pre-requisites](#pre-requisites). There is
-currently no separate credential or access control for the audit index: anyone who can
-read `container-logs-*` from OpenSearch directly can read `audit-logs-*` too. Access
-control through OpenChoreo is enforced by the Observer, which gates the audit read on its
-own permission.
-
-### What the stored records look like
-
-Two points that will otherwise cost you a wrong query:
-
-- **`@timestamp` and `event_time` are different times.** `@timestamp` is when the
-  collector read the line and is what picks the daily index; `event_time` is when the
-  audited request was received, and is what the audit API filters and sorts on. They
-  normally differ by milliseconds, and by much more if collection was backed up.
-- **`resource.environment` is dual-scoped**, stored as `{namespace}/{name}` — recorded
-  exactly as authorization evaluated it. A filter on the bare environment name matches
-  nothing. Its sibling fields (`resource.namespace`, `resource.project`,
-  `resource.component`) are bare names.
-
-`metadata` and `resource.metadata` are open maps with no fixed shape. They are stored and
-returned, but not indexed, so they cannot be filtered on.
-
 ## Troubleshooting
 
 ### Observer returns no logs

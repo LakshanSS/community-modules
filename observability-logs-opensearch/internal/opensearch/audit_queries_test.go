@@ -59,9 +59,7 @@ func TestBuildAuditLogsQuery_MapsEveryFilterOntoItsField(t *testing.T) {
 	if query["size"] != 50 {
 		t.Errorf("size = %v, want 50", query["size"])
 	}
-	// The contract specifies total as exact, so counting must not stop at
-	// OpenSearch's default 10000 cap - there is no field in which to say a count
-	// was truncated.
+	// The contract gives no field in which to mark a count truncated.
 	if query["track_total_hits"] != true {
 		t.Errorf("track_total_hits = %v, want true", query["track_total_hits"])
 	}
@@ -105,9 +103,8 @@ func TestBuildAuditLogsQuery_MapsEveryFilterOntoItsField(t *testing.T) {
 	}
 }
 
-// The window bounds the record's own event_time, not @timestamp. Filtering on the
-// latter would select by when the collector read the line, which is a different
-// question and drifts whenever collection is backed up.
+// @timestamp would select by when the collector read the line, which drifts whenever
+// collection is backed up.
 func TestBuildAuditLogsQuery_RangesOnEventTime(t *testing.T) {
 	qb := NewQueryBuilder("audit-logs-")
 
@@ -150,8 +147,8 @@ func TestBuildAuditLogsQuery_OmitsEmptyFilters(t *testing.T) {
 	}
 }
 
-// Sorting on event_time alone leaves records sharing a timestamp in an arbitrary
-// order, so two identical queries can disagree on which of them the limit cuts off.
+// Without a tiebreaker, two identical queries can disagree on which record the limit
+// cuts off.
 func TestBuildAuditLogsQuery_SortsWithATiebreaker(t *testing.T) {
 	qb := NewQueryBuilder("audit-logs-")
 
@@ -173,9 +170,8 @@ func TestBuildAuditLogsQuery_SortsWithATiebreaker(t *testing.T) {
 	}
 }
 
-// A year of retention day-walked into index names is roughly 8KB of request line
-// against OpenSearch's 4KB default, which fails as a malformed request rather than as
-// a length error. The audit path resolves a wildcard instead.
+// A year day-walked is ~8KB of request line against OpenSearch's 4KB default, which
+// fails as a malformed request rather than a length error.
 func TestAuditIndexPattern_IsAWildcardNotADayWalk(t *testing.T) {
 	qb := NewQueryBuilder("audit-logs-")
 
@@ -184,9 +180,7 @@ func TestAuditIndexPattern_IsAWildcardNotADayWalk(t *testing.T) {
 	}
 }
 
-// A width that would exceed the cap is coarsened rather than rejected: rejecting would
-// leave a caller who asked for 1m over a year with no timeline at all, when a coarser
-// one answers the question they were asking.
+// Rejecting would leave a caller who asked for 1m over a year with no timeline at all.
 func TestResolveTimelineInterval_CoarsensRatherThanRejects(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -261,8 +255,7 @@ func TestResolveTimelineInterval_RejectsAnUnusableWindow(t *testing.T) {
 	}
 }
 
-// The buckets must cover the window contiguously. A sparse array would let a caller
-// draw a continuous chart straight across a gap in activity, reading quiet as busy.
+// A sparse array would chart straight across a gap in activity, reading quiet as busy.
 func TestBuildAuditTimelineAgg_ZeroFillsTheWindow(t *testing.T) {
 	agg := BuildAuditTimelineAgg("15m", "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z")
 
@@ -285,10 +278,8 @@ func TestBuildAuditTimelineAgg_ZeroFillsTheWindow(t *testing.T) {
 	}
 }
 
-// A terms-aggregation include is a Lucene regex with no case-insensitivity flag, so
-// each cased letter is expanded into a character class. Matching a lowercase
-// normalizer sub-field instead would return lowercased values, and the contract
-// requires a value to come back exactly as it would be sent back as a filter.
+// Lucene regex has no case-insensitivity flag. A lowercase normalizer sub-field would
+// return lowercased values, which the contract does not allow.
 func TestValueSearchRegex_IsCaseInsensitiveSubstring(t *testing.T) {
 	got, ok := valueSearchRegex("cli")
 	if !ok {
@@ -309,8 +300,8 @@ func TestValueSearchRegex_EscapesRegexSyntax(t *testing.T) {
 	}
 }
 
-// The engine rejects a regex over index.max_regex_length outright, so an over-long
-// search is declined here and applied in Go instead.
+// The engine rejects a regex over index.max_regex_length outright, so it is applied in
+// Go instead.
 func TestValueSearchRegex_DeclinesWhatTheEngineWouldReject(t *testing.T) {
 	if _, ok := valueSearchRegex(strings.Repeat("a", 256)); ok {
 		t.Error("valueSearchRegex() accepted a search that exceeds the regex length limit")
@@ -366,9 +357,7 @@ func TestBuildAuditFilterValuesQuery_OrdersByCountThenValue(t *testing.T) {
 	}
 }
 
-// totalValues reports how many values match, so the count has to see the same search
-// the buckets do. Counting the whole field would report thousands behind a search that
-// narrowed to three.
+// Counting the whole field would report thousands behind a search that narrowed to three.
 func TestBuildAuditFilterValuesQuery_CountsOnlyMatchingValues(t *testing.T) {
 	qb := NewQueryBuilder("audit-logs-")
 	params := AuditLogsQueryParams{
@@ -414,8 +403,7 @@ func TestParseAuditFilterValues_DropsValuesNoFilterWouldSelect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAuditFilterValues() error = %v", err)
 	}
-	// A record on which the field is absent has no filter value that would select it,
-	// so it is not offered as a choice.
+	// No filter value would select an absent field, so it is not offered as a choice.
 	if len(values) != 1 || values[0].Value != "user-1" {
 		t.Errorf("values = %v, want only user-1", values)
 	}
@@ -424,8 +412,6 @@ func TestParseAuditFilterValues_DropsValuesNoFilterWouldSelect(t *testing.T) {
 	}
 }
 
-// totalValues counts the distinct values that match, which is not the number returned:
-// the terms aggregation returns at most maxValues of them.
 func TestParseAuditFilterValues_TotalIsNotThePageSize(t *testing.T) {
 	aggs := json.RawMessage(`{
 		"values": {
@@ -482,8 +468,8 @@ func TestParseAuditTimeline_KeepsEmptyBuckets(t *testing.T) {
 	}
 }
 
-// An adapter that cannot compute a timeline omits it. That is a different answer from
-// a timeline reporting no activity, so nil must not become an empty struct.
+// An omitted timeline differs from one reporting no activity, so nil must not become an
+// empty struct.
 func TestParseAuditTimeline_ReturnsNilWhenAbsent(t *testing.T) {
 	timeline, err := ParseAuditTimeline(nil, "15m")
 	if err != nil {

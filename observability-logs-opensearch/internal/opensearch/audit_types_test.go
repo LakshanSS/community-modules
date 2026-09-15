@@ -5,7 +5,7 @@ package opensearch
 
 import "testing"
 
-// completeAuditSource is a stored document carrying every field the contract requires.
+// completeAuditSource carries every field the contract requires.
 func completeAuditSource() map[string]interface{} {
 	return map[string]interface{}{
 		"schema_version": "1.0",
@@ -34,8 +34,7 @@ func TestParseAuditRecord_ReadsACompleteRecord(t *testing.T) {
 	}
 }
 
-// A blank in any of these would put "nobody, at no time, outcome unknown" on the wire as
-// a real reading.
+// A blank in any of these would go on the wire as a real reading.
 func TestParseAuditRecord_RejectsAMissingIdentityField(t *testing.T) {
 	for _, field := range []string{
 		"schema_version", "event_id", "event_time", "actor", "result",
@@ -51,8 +50,7 @@ func TestParseAuditRecord_RejectsAMissingIdentityField(t *testing.T) {
 	}
 }
 
-// A request rejected before routing resolves an action is recorded with both empty. These
-// are the anonymous rejections an audit reader most wants, so they must survive parsing.
+// A request rejected before routing resolves an action is recorded with both empty.
 func TestParseAuditRecord_KeepsARecordWithNoResolvedAction(t *testing.T) {
 	source := completeAuditSource()
 	source["action"] = ""

@@ -158,16 +158,14 @@ func TestQueryAuditLogs_ReturnsRecordsAndCollectorInfo(t *testing.T) {
 	if record.EventId != "evt-1" || record.Actor.Id != "user-1" {
 		t.Errorf("record = %+v, want evt-1 by user-1", record)
 	}
-	// The collected origin is carried so a caller can compare it against the
-	// record's own producer claim.
+	// Carried so a caller can compare it against the record's own producer claim.
 	if record.Collector == nil || record.Collector.ContainerName == nil ||
 		*record.Collector.ContainerName != "api-server" {
 		t.Errorf("collector = %+v, want container api-server", record.Collector)
 	}
 }
 
-// A record that does not parse is skipped rather than emitted zero-valued: a blank
-// actor at the epoch reads as a real finding of "nobody, at no time".
+// Emitting a zero-valued record would read as a real finding.
 func TestQueryAuditLogs_SkipsMalformedDocuments(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
 		{"_id": "bad", "_score": 1.0, "_source": map[string]interface{}{"action": "create_project"}},
@@ -187,7 +185,6 @@ func TestQueryAuditLogs_SkipsMalformedDocuments(t *testing.T) {
 	}
 }
 
-// total is the count across the whole window, not the size of the returned page.
 func TestQueryAuditLogs_TotalIsTheWindowCountNotThePageSize(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload([]map[string]interface{}{
 		auditHit("evt-1", "2026-09-01T10:00:00Z"),
@@ -209,8 +206,7 @@ func TestQueryAuditLogs_TotalIsTheWindowCountNotThePageSize(t *testing.T) {
 	}
 }
 
-// The contract specifies total as exact and gives no way to mark a count truncated,
-// so counting must not stop at OpenSearch's default 10000 cap.
+// The contract gives no way to mark a count truncated at OpenSearch's 10000 default.
 func TestQueryAuditLogs_CountsMatchesFully(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload(nil, 0))
 	defer server.Close()
@@ -225,8 +221,7 @@ func TestQueryAuditLogs_CountsMatchesFully(t *testing.T) {
 	}
 }
 
-// The audit records live in their own index, not the container logs, and the pattern
-// is a wildcard rather than a day-walked list of names.
+// Audit records live in their own index, reached by wildcard rather than a day-walk.
 func TestQueryAuditLogs_SearchesTheAuditWildcard(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload(nil, 0))
 	defer server.Close()
@@ -299,8 +294,7 @@ func TestQueryAuditLogs_NoTimelineAggregationUnlessRequested(t *testing.T) {
 	}
 }
 
-// The generated server does not enforce the contract's ceilings, so an over-large
-// request must not reach OpenSearch as asked.
+// The generated server does not enforce the contract's ceilings.
 func TestQueryAuditLogs_ClampsTheLimitToTheContractMaximum(t *testing.T) {
 	server := newAuditServer(t, auditSearchPayload(nil, 0))
 	defer server.Close()
@@ -418,8 +412,7 @@ func TestQueryAuditLogFilterValues_ReturnsValuesInOrder(t *testing.T) {
 	}
 }
 
-// The named filter's own selections are ignored so a picker keeps offering the
-// alternatives to what is already selected, rather than only the selection itself.
+// A picker must keep offering alternatives, not just what is already selected.
 func TestQueryAuditLogFilterValues_IgnoresTheNamedFiltersOwnSelections(t *testing.T) {
 	server := newAuditServer(t, map[string]interface{}{
 		"took":      2,
@@ -459,8 +452,7 @@ func TestQueryAuditLogFilterValues_IgnoresTheNamedFiltersOwnSelections(t *testin
 	}
 }
 
-// limit, sortOrder and the timeline controls carry no meaning here and the contract
-// says to ignore them rather than reject them.
+// The contract says to ignore these rather than reject them.
 func TestQueryAuditLogFilterValues_IgnoresRecordQueryControls(t *testing.T) {
 	server := newAuditServer(t, map[string]interface{}{
 		"took":      2,
@@ -507,8 +499,7 @@ func TestQueryAuditLogFilterValues_IgnoresRecordQueryControls(t *testing.T) {
 	}
 }
 
-// Answering 501 is what lets the observer tell a missing capability apart from a
-// filter that genuinely has no values; an empty 200 would claim the latter.
+// 501 tells a missing capability apart from a filter that genuinely has no values.
 func TestQueryPlatformLogFilterValues_NotImplemented(t *testing.T) {
 	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
 

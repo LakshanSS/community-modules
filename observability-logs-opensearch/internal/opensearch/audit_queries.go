@@ -11,27 +11,25 @@ import (
 	"time"
 )
 
-// AuditEventTimeField is when the audited request was received. Filtering and sorting
-// use it rather than @timestamp, which is when the collector read the line.
+// AuditEventTimeField is when the request was received, unlike @timestamp, which is
+// when the collector read the line.
 const AuditEventTimeField = "event_time"
 
-// AuditEventIDField is a UUID v7, unique per record.
+// AuditEventIDField identifies one record.
 const AuditEventIDField = "event_id"
 
-// AuditEntitlementValuesField holds the values of every claim in the record's
-// actor.entitlements map, copied there by the index template, so a caller can filter on
-// an entitlement without knowing which claim carries it.
+// AuditEntitlementValuesField collects every actor.entitlements claim's values, so a
+// caller can filter on an entitlement without knowing which claim carries it.
 const AuditEntitlementValuesField = "actor.entitlement_values"
 
-// maxTimelineBuckets is the ceiling the contract requires a wider request to be
-// coarsened to rather than rejected against.
+// maxTimelineBuckets is the contract ceiling; a wider window is coarsened, not rejected.
 const maxTimelineBuckets = 500
 
 // maxAggregationRegexLength is OpenSearch's index.max_regex_length default.
 const maxAggregationRegexLength = 1000
 
-// auditTrackTotalHits counts every match rather than stopping at OpenSearch's default
-// 10000: the contract specifies total as exact and offers no way to mark one truncated.
+// auditTrackTotalHits counts past OpenSearch's 10000 default, which the contract's exact
+// total requires.
 const auditTrackTotalHits = true
 
 // AuditLogsQueryParams holds the filters for an audit log query.
@@ -68,12 +66,9 @@ type AuditLogsQueryParams struct {
 	SortOrder    string
 }
 
-// AuditIndexPattern returns the wildcard the audit indices are searched through.
-//
-// A wildcard rather than GenerateIndices' day-by-day enumeration: audit retention
-// defaults to a year, and a year of daily index names is ~8KB of request line against
-// OpenSearch's 4KB default, which fails as a malformed request rather than a length
-// error.
+// AuditIndexPattern returns the wildcard the audit indices are searched through. A
+// wildcard rather than GenerateIndices' day-walk: a year of daily names is ~8KB of
+// request line against OpenSearch's 4KB default, which fails as a malformed request.
 func (qb *QueryBuilder) AuditIndexPattern() string {
 	return qb.indexPrefix + "*"
 }
@@ -103,8 +98,8 @@ func (qb *QueryBuilder) BuildAuditLogsQuery(params AuditLogsQueryParams) map[str
 	}
 }
 
-// auditSort breaks event_time ties on event_id, so records sharing a timestamp come
-// back in a stable order across identical queries.
+// auditSort breaks event_time ties on event_id, for a stable order across identical
+// queries.
 func auditSort(sortOrder string) []map[string]interface{} {
 	return []map[string]interface{}{
 		{AuditEventTimeField: map[string]interface{}{"order": sortOrder}},
@@ -145,8 +140,8 @@ func auditFilters(params AuditLogsQueryParams) []map[string]interface{} {
 	return filters
 }
 
-// addAuditTimeRangeFilter bounds the query on event_time, inclusive of startTime and
-// exclusive of endTime as the contract states.
+// addAuditTimeRangeFilter bounds the query on event_time, half-open as the contract
+// states.
 func addAuditTimeRangeFilter(
 	filters []map[string]interface{}, startTime, endTime string,
 ) []map[string]interface{} {
@@ -163,10 +158,8 @@ func addAuditTimeRangeFilter(
 	})
 }
 
-// BuildAuditTimelineAgg builds the date histogram that backs the timeline.
-//
-// min_doc_count 0 with extended_bounds keeps empty buckets, which the contract
-// requires: a sparse array would let a caller chart straight across a gap in activity.
+// BuildAuditTimelineAgg builds the date histogram that backs the timeline. The empty
+// buckets are deliberate: a sparse array would chart straight across a gap in activity.
 func BuildAuditTimelineAgg(interval, startTime, endTime string) map[string]interface{} {
 	return map[string]interface{}{
 		"timeline": map[string]interface{}{
@@ -191,10 +184,8 @@ func BuildAuditTimelineAgg(interval, startTime, endTime string) map[string]inter
 	}
 }
 
-// ResolveTimelineInterval picks the bucket width to use.
-//
-// A width exceeding maxTimelineBuckets is coarsened rather than rejected: rejecting
-// would leave a caller who asked for 1m over a year with no timeline at all.
+// ResolveTimelineInterval picks the bucket width. Too fine a request is coarsened
+// rather than rejected, which would leave 1m over a year with no timeline at all.
 func ResolveTimelineInterval(requested string, start, end time.Time) (string, error) {
 	window := end.Sub(start)
 	if window <= 0 {
@@ -212,8 +203,7 @@ func ResolveTimelineInterval(requested string, start, end time.Time) (string, er
 		}
 	}
 
-	// Ceiling, because a window that does not divide evenly spills into one more bucket
-	// than the floor reports.
+	// Ceiling: an uneven window spills into one more bucket than the floor reports.
 	for (window+width-1)/width > maxTimelineBuckets {
 		next := coarsenInterval(width)
 		if next <= width {
@@ -228,7 +218,7 @@ func ResolveTimelineInterval(requested string, start, end time.Time) (string, er
 }
 
 // parseTimelineInterval reads the contract's <count><unit> notation. An empty string
-// means the adapter chooses, and is not an error.
+// means the adapter chooses.
 func parseTimelineInterval(s string) (time.Duration, error) {
 	if s == "" {
 		return 0, nil
@@ -272,10 +262,8 @@ func coarsenInterval(d time.Duration) time.Duration {
 	return d
 }
 
-// formatTimelineInterval renders a duration into the contract's notation.
-//
-// Weeks are rendered as a day count because OpenSearch's fixed_interval accepts no
-// unit above d.
+// formatTimelineInterval renders a duration into the contract's notation. Weeks become
+// a day count because fixed_interval accepts no unit above d.
 func formatTimelineInterval(d time.Duration) string {
 	switch {
 	case d%(24*time.Hour) == 0:
@@ -309,9 +297,8 @@ func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 			{"_key": "asc"},
 		},
 	}
-	// The cardinality is scoped to the same search the buckets are, so the count reports
-	// how many values match rather than how many the field holds. Nesting it under its
-	// own filter keeps the bucket doc counts drawn from the unnarrowed record set.
+	// Scoped to the same search as the buckets, so the count reports matching values
+	// rather than every value the field holds.
 	totalScope := map[string]interface{}{"match_all": map[string]interface{}{}}
 	if include, ok := valueSearchRegex(valueSearch); ok {
 		terms["include"] = include
@@ -345,13 +332,12 @@ func (qb *QueryBuilder) BuildAuditFilterValuesQuery(
 	}
 }
 
-// valueSearchRegex turns a case-insensitive substring search into the Lucene regex a
-// terms aggregation include takes, reporting false when it would be too long to send.
+// valueSearchRegex turns a case-insensitive substring search into a Lucene regex,
+// reporting false when it would be too long to send.
 //
-// Each cased letter expands into a character class because the engine has no (?i)
-// flag. A lowercase normalizer sub-field would be simpler but returns lowercased
-// values, and the contract requires values to come back exactly as they would be sent
-// back as a filter.
+// Each cased letter expands into a character class because the engine has no (?i) flag.
+// A lowercase normalizer sub-field would be simpler but returns lowercased values, and
+// the contract requires values to come back exactly as they would be sent as a filter.
 func valueSearchRegex(valueSearch string) (string, bool) {
 	if valueSearch == "" {
 		return "", false
@@ -386,8 +372,7 @@ func escapeRegexLiteral(r rune) string {
 	return string(r)
 }
 
-// ParseAuditFilterValues reads the values aggregation back out of a search response,
-// returning the distinct values and how many distinct values matched in total.
+// ParseAuditFilterValues returns the distinct values and how many matched in total.
 func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, int64, error) {
 	if len(aggregations) == 0 {
 		return nil, 0, nil
@@ -422,9 +407,8 @@ func ParseAuditFilterValues(aggregations json.RawMessage) ([]AuditFilterValue, i
 	return values, parsed.TotalValues.Matching.Value, nil
 }
 
-// ParseAuditTimeline reads the timeline aggregation back out of a search response,
-// returning nil when the response carries none — a different answer from a timeline
-// reporting no activity.
+// ParseAuditTimeline returns nil when the response carries no timeline, which differs
+// from a timeline reporting no activity.
 func ParseAuditTimeline(aggregations json.RawMessage, interval string) (*AuditTimeline, error) {
 	if len(aggregations) == 0 {
 		return nil, nil
