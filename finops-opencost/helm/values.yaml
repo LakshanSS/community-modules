@@ -30,10 +30,9 @@ opencost:
     customPricing:
       enabled: true
       costModel:
-        description: Modified prices based on your internal pricing
-        CPU: 1.25
-        RAM: 0.5
-        storage: 0.25
+        CPU: 0.04
+        RAM: 0.005
+        storage: 0.0001
 
     metrics:
       kubeStateMetrics:
@@ -65,8 +64,8 @@ adapter:
   recommendationCpuHeadroom: 0.2
   recommendationMemoryHeadroom: 0.2
   # Floor values so recommendations never become 0.
-  recommendationCpuMinRequestMillicores: 1
-  recommendationMemoryMinRequestMi: 5
+  recommendationCpuMinRequestMillicores: 10
+  recommendationMemoryMinRequestMebibytes: 15
 
   logLevel: "INFO"
 

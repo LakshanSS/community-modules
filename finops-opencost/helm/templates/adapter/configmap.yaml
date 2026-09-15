@@ -19,6 +19,6 @@ data:
   RECOMMENDATION_CPU_HEADROOM: {{ .Values.adapter.recommendationCpuHeadroom | quote }}
   RECOMMENDATION_MEMORY_HEADROOM: {{ .Values.adapter.recommendationMemoryHeadroom | quote }}
   RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES: {{ .Values.adapter.recommendationCpuMinRequestMillicores | quote }}
-  RECOMMENDATION_MEMORY_MIN_REQUEST_MI: {{ .Values.adapter.recommendationMemoryMinRequestMi | quote }}
+  RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES: {{ .Values.adapter.recommendationMemoryMinRequestMebibytes | quote }}
   LOG_LEVEL: {{ .Values.adapter.logLevel | quote }}
 {{- end }}

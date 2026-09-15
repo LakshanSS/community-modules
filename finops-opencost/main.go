@@ -37,7 +37,7 @@ func main() {
 		slog.Float64("RECOMMENDATION_CPU_HEADROOM", cfg.RecommendationCPUHeadroom),
 		slog.Float64("RECOMMENDATION_MEMORY_HEADROOM", cfg.RecommendationMemoryHeadroom),
 		slog.Float64("RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", cfg.RecommendationMinCPURequest*1000),
-		slog.Float64("RECOMMENDATION_MEMORY_MIN_REQUEST_MI", cfg.RecommendationMinMemRequest/(1024*1024)),
+		slog.Float64("RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES", cfg.RecommendationMinMemRequest/(1024*1024)),
 	)
 
 	openCostClient := opencost.NewClient(cfg.OpenCostURL, logger)

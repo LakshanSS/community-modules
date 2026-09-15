@@ -14,7 +14,7 @@ func clearConfigEnv(t *testing.T) {
 		"SERVER_PORT", "OPENCOST_URL", "OBSERVER_URL", "METRICS_STEP",
 		"RECOMMENDATION_CPU_PERCENTILE", "RECOMMENDATION_MEMORY_PERCENTILE",
 		"RECOMMENDATION_CPU_HEADROOM", "RECOMMENDATION_MEMORY_HEADROOM",
-		"RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", "RECOMMENDATION_MEMORY_MIN_REQUEST_MI",
+		"RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", "RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES",
 		"LOG_LEVEL",
 	} {
 		t.Setenv(key, "")
@@ -46,11 +46,11 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.RecommendationCPUHeadroom != 0.2 || cfg.RecommendationMemoryHeadroom != 0.2 {
 		t.Errorf("headroom defaults wrong")
 	}
-	// 1 millicore -> 0.001 cores, 5 Mi -> 5*1024*1024 bytes.
-	if cfg.RecommendationMinCPURequest != 0.001 {
-		t.Errorf("min cpu = %v, want 0.001", cfg.RecommendationMinCPURequest)
+	// 10 millicores -> 0.01 cores, 15 Mi -> 15*1024*1024 bytes.
+	if cfg.RecommendationMinCPURequest != 0.01 {
+		t.Errorf("min cpu = %v, want 0.01", cfg.RecommendationMinCPURequest)
 	}
-	if cfg.RecommendationMinMemRequest != 5*1024*1024 {
+	if cfg.RecommendationMinMemRequest != 15*1024*1024 {
 		t.Errorf("min mem = %v", cfg.RecommendationMinMemRequest)
 	}
 	if cfg.LogLevel != slog.LevelInfo {
@@ -69,7 +69,7 @@ func TestLoadConfigOverrides(t *testing.T) {
 	t.Setenv("RECOMMENDATION_CPU_HEADROOM", "0.3")
 	t.Setenv("RECOMMENDATION_MEMORY_HEADROOM", "0.4")
 	t.Setenv("RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", "10")
-	t.Setenv("RECOMMENDATION_MEMORY_MIN_REQUEST_MI", "20")
+	t.Setenv("RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES", "20")
 	t.Setenv("LOG_LEVEL", "debug")
 
 	cfg, err := LoadConfig()
@@ -125,14 +125,14 @@ func TestLoadConfigInvalid(t *testing.T) {
 		{"bad cpu headroom float", "RECOMMENDATION_CPU_HEADROOM", "abc"},
 		{"bad memory headroom float", "RECOMMENDATION_MEMORY_HEADROOM", "abc"},
 		{"bad min cpu float", "RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", "abc"},
-		{"bad min mem float", "RECOMMENDATION_MEMORY_MIN_REQUEST_MI", "abc"},
+		{"bad min mem float", "RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES", "abc"},
 		{"cpu percentile zero", "RECOMMENDATION_CPU_PERCENTILE", "0"},
 		{"cpu percentile over 100", "RECOMMENDATION_CPU_PERCENTILE", "101"},
 		{"memory percentile over 100", "RECOMMENDATION_MEMORY_PERCENTILE", "150"},
 		{"negative cpu headroom", "RECOMMENDATION_CPU_HEADROOM", "-1"},
 		{"negative memory headroom", "RECOMMENDATION_MEMORY_HEADROOM", "-1"},
 		{"negative min cpu", "RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", "-1"},
-		{"negative min mem", "RECOMMENDATION_MEMORY_MIN_REQUEST_MI", "-1"},
+		{"negative min mem", "RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES", "-1"},
 		{"bad opencost url", "OPENCOST_URL", "not-a-url"},
 		{"bad observer url", "OBSERVER_URL", "not-a-url"},
 		{"port not integer", "SERVER_PORT", "abc"},

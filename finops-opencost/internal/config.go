@@ -51,11 +51,11 @@ func LoadConfig() (*Config, error) {
 	}
 	// Minimum requests are configured in Kubernetes-friendly units (millicores
 	// and mebibytes) and converted to cores and bytes for the algorithm.
-	minCPUMillicores, err := getEnvFloat("RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", 1)
+	minCPUMillicores, err := getEnvFloat("RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES", 10)
 	if err != nil {
 		return nil, err
 	}
-	minMemMi, err := getEnvFloat("RECOMMENDATION_MEMORY_MIN_REQUEST_MI", 5)
+	minMemMi, err := getEnvFloat("RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES", 15)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func LoadConfig() (*Config, error) {
 			return nil, fmt.Errorf("%s must be in the range (0, 100], got %v", name, p)
 		}
 	}
-	for name, v := range map[string]float64{"RECOMMENDATION_CPU_HEADROOM": cpuHeadroom, "RECOMMENDATION_MEMORY_HEADROOM": memoryHeadroom, "RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES": minCPUMillicores, "RECOMMENDATION_MEMORY_MIN_REQUEST_MI": minMemMi} {
+	for name, v := range map[string]float64{"RECOMMENDATION_CPU_HEADROOM": cpuHeadroom, "RECOMMENDATION_MEMORY_HEADROOM": memoryHeadroom, "RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES": minCPUMillicores, "RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES": minMemMi} {
 		if v < 0 {
 			return nil, fmt.Errorf("%s must be >= 0, got %v", name, v)
 		}

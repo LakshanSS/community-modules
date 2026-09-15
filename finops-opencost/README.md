@@ -50,8 +50,8 @@ The adapter reads its configuration from environment variables, surfaced as `ada
 | `RECOMMENDATION_MEMORY_PERCENTILE` | `adapter.recommendationMemoryPercentile` | `95` | Usage percentile used to size the memory request. |
 | `RECOMMENDATION_CPU_HEADROOM` | `adapter.recommendationCpuHeadroom` | `0.2` | Fractional headroom added on top of the CPU percentile. |
 | `RECOMMENDATION_MEMORY_HEADROOM` | `adapter.recommendationMemoryHeadroom` | `0.2` | Fractional headroom added on top of the memory percentile. |
-| `RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES` | `adapter.recommendationCpuMinRequestMillicores` | `1` | Floor for the recommended CPU request (millicores), so idle workloads are not sized to zero. |
-| `RECOMMENDATION_MEMORY_MIN_REQUEST_MI` | `adapter.recommendationMemoryMinRequestMi` | `5` | Floor for the recommended memory request (mebibytes). |
+| `RECOMMENDATION_CPU_MIN_REQUEST_MILLICORES` | `adapter.recommendationCpuMinRequestMillicores` | `10` | Floor for the recommended CPU request (millicores), so idle workloads are not sized to zero. |
+| `RECOMMENDATION_MEMORY_MIN_REQUEST_MEBIBYTES` | `adapter.recommendationMemoryMinRequestMebibytes` | `15` | Floor for the recommended memory request. |
 | `LOG_LEVEL` | `adapter.logLevel` | `INFO` | Log level (`DEBUG`/`INFO`/`WARN`/`ERROR`). |
 
 ## Dependencies
@@ -66,6 +66,7 @@ Bundled upstream Helm charts:
 
 > **Note:** The Helm chart version specified in the installation command above is for the latest module version compatible with the development version of OpenChoreo. Refer to the compatibility table below to determine the appropriate module version for your OpenChoreo installation.
 
-| Module Version | OpenChoreo Version |
-| -------------- | ------------------ |
-| v0.1.x         | v1.1.x             |
+| OpenChoreo Version | Module Version |
+| ------------------ | ---------------|
+| v1.3.0 and later   | 0.2.0          |
+| v1.1.x - v1.2.x    | 0.1.x          |
