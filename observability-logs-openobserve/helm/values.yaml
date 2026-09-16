@@ -139,6 +139,11 @@ openobserve:
 ## Values for OpenChoreo specific customizations and workloads
 ## -----------------------------------------------------------
 
+fluentBitCustomizations:
+  # Name of the cluster these records were collected from. REQUIRED when
+  # fluent-bit.enabled is true; it cannot be defaulted.
+  clusterInstance: ""
+
 adapter:
   enabled: true
   observerUrl: "http://observer-internal.openchoreo-observability-plane:8081"

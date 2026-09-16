@@ -744,3 +744,74 @@ func (c *Client) parseApplicationLogEntry(timestamp int64, source map[string]int
 
 	return entry
 }
+
+// GetPlatformLogs queries logs by raw Kubernetes coordinates.
+func (c *Client) GetPlatformLogs(ctx context.Context, params PlatformLogsParams) (*PlatformLogsResult, error) {
+	queryJSON, err := generatePlatformLogsQuery(params, c.stream, c.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate platform logs query: %w", err)
+	}
+
+	resp, err := c.executeSearchQuery(ctx, queryJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	logs := make([]PlatformLogsEntry, 0, len(resp.Hits))
+	for _, hit := range resp.Hits {
+		timestamp := int64(0)
+		if ts, ok := hit["_timestamp"].(float64); ok {
+			timestamp = int64(ts)
+		}
+		logs = append(logs, parsePlatformLogEntry(timestamp, hit))
+	}
+
+	countJSON, err := generatePlatformLogsCountQuery(params, c.stream, c.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate platform logs count query: %w", err)
+	}
+	countResp, err := c.executeSearchQuery(ctx, countJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute platform logs count query: %w", err)
+	}
+
+	return &PlatformLogsResult{
+		Logs:       logs,
+		TotalCount: extractTotalCount(countResp),
+		Took:       resp.Took,
+	}, nil
+}
+
+// GetPlatformLogFilterValues lists the distinct values one filter takes under a query.
+//
+// The caller is expected to have cleared the listed filter's own selections already, with
+// ClearFilterSelections. The distinct count is its own query so the total is exact rather
+// than bounded by the page of values returned.
+func (c *Client) GetPlatformLogFilterValues(
+	ctx context.Context, params PlatformLogsParams, column, valueSearch string, maxValues int,
+) (*PlatformLogFilterValues, error) {
+	queryJSON, err := generatePlatformFilterValuesQuery(params, c.stream, column, valueSearch, maxValues, c.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate filter values query: %w", err)
+	}
+
+	resp, err := c.executeSearchQuery(ctx, queryJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	totalJSON, err := generatePlatformFilterValuesTotalQuery(params, c.stream, column, valueSearch, c.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate filter values total query: %w", err)
+	}
+	totalResp, err := c.executeSearchQuery(ctx, totalJSON)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute filter values total query: %w", err)
+	}
+
+	return &PlatformLogFilterValues{
+		Values:      parsePlatformFilterValues(resp),
+		TotalValues: int64(extractTotalCount(totalResp)),
+		Took:        resp.Took,
+	}, nil
+}

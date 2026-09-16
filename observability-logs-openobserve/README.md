@@ -99,8 +99,13 @@ helm upgrade observability-logs-openobserve \
   --namespace openchoreo-observability-plane \
   --version 0.0.0-latest-dev \
   --reuse-values \
-  --set fluent-bit.enabled=true
+  --set fluent-bit.enabled=true \
+  --set fluentBitCustomizations.clusterInstance=<cluster-name>
 ```
+
+> **Note:** `fluentBitCustomizations.clusterInstance` is required. It names the cluster the
+> records were collected from and is stamped on every log record, so pick a value that is
+> unique across the clusters reporting to this observability plane.
 
 ### Multi-cluster topology
 
@@ -143,6 +148,7 @@ helm upgrade --install observability-logs-openobserve \
   --namespace openchoreo-observability-plane \
   --version 0.0.0-latest-dev \
   --set fluent-bit.enabled=true \
+  --set fluentBitCustomizations.clusterInstance=<cluster-name> \
   --set openobserve-standalone.enabled=false \
   --set openobserve.enabled=false \
   --set openObserveSetup.enabled=false \
@@ -154,6 +160,7 @@ helm upgrade --install observability-logs-openobserve \
 
 > **Note:**
 >
+> - `fluentBitCustomizations.clusterInstance` is required and must be unique per remote cluster — it is stamped on every log record and is what the platform logs API filters on to tell the clusters apart.
 > - The `openobserve-admin-credentials` secret must exist on the remote clusters as well, because Fluent Bit basic-authenticates directly to OpenObserve. If you don't have a shared secret backend, create it manually (see the [Multi-Cluster Connectivity](https://openchoreo.dev/docs/platform-engineer-guide/multi-cluster-connectivity/) guide).
 > - `common.openObserveHost` and `common.openObservePort` must point at the gateway endpoint exposed from the observability plane cluster, and `common.openObserveHost` **must be the same hostname** listed in `common.httpRouteHostnames` on the observability plane release — Fluent Bit sends this value both as the connection address and as the HTTP `Host` header, so the two have to match for the `HTTPRoute` to select this module's route instead of another one on the same gateway (Fluent Bit's HTTP output has no option to send a different `Host` header than the one it connects to).
 > - Set `common.openObserveTlsEnabled=true` if the obs gateway listener is HTTPS, or `false` if it is plain HTTP.
