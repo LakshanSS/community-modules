@@ -99,8 +99,6 @@ fluent-bit:
   openSearchHost: "opensearch"
   openSearchPort: 9200
   openSearchVHost: "opensearch"
-  # Name of the cluster these records were collected from. REQUIRED
-  clusterInstance: ""
 
 auditLogs:
   # Route audit records to their own index and retention instead of the container
@@ -152,6 +150,11 @@ openSearch:
 ## -----------------------------------------------------------
 ## Values for OpenChoreo specific customizations and workloads
 ## -----------------------------------------------------------
+
+fluentBitCustomizations:
+  # Name of the cluster these records were collected from. REQUIRED when
+  # fluent-bit.enabled is true; it cannot be defaulted.
+  clusterInstance: ""
 
 openSearchCluster:
   enabled: false

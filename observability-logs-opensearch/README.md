@@ -86,7 +86,7 @@ helm upgrade --install observability-logs-opensearch \
 Every install that enables Fluent Bit must name its cluster:
 
 ```bash
---set fluent-bit.clusterInstance=clusterX
+--set fluentBitCustomizations.clusterInstance=clusterX
 ```
 
 The value is required and the chart refuses to render without it. It cannot be
@@ -113,7 +113,7 @@ helm upgrade observability-logs-opensearch \
   --version 0.5.3 \
   --reuse-values \
   --set fluent-bit.enabled=true \
-  --set fluent-bit.clusterInstance=singleCluster
+  --set fluentBitCustomizations.clusterInstance=singleCluster
 ```
 
 ### Multi-cluster topology
@@ -167,7 +167,7 @@ helm upgrade --install observability-logs-opensearch \
   --set openSearchCluster.enabled=false \
   --set openSearchSetup.enabled=false \
   --set fluent-bit.enabled=true \
-  --set fluent-bit.clusterInstance=clusterX \
+  --set fluentBitCustomizations.clusterInstance=clusterX \
   --set fluent-bit.openSearchHost=opensearch.<OBS_BASE_DOMAIN> \
   --set fluent-bit.openSearchPort=<gateway-tls-passthrough-port> \
   --set fluent-bit.openSearchVHost=opensearch.<OBS_BASE_DOMAIN>
@@ -198,7 +198,7 @@ helm upgrade observability-logs-opensearch \
   --version 0.5.3 \
   --reuse-values \
   --set fluent-bit.enabled=true \
-  --set fluent-bit.clusterInstance=singleCluster \
+  --set fluentBitCustomizations.clusterInstance=singleCluster \
   --set auditLogs.enabled=true
 ```
 

@@ -1,6 +1,6 @@
 {{- if (index .Values "fluent-bit").enabled }}
-{{- if not (index .Values "fluent-bit").clusterInstance }}
-{{- fail "fluent-bit.clusterInstance is required. It names the cluster these records came from and cannot be defaulted." }}
+{{- if not .Values.fluentBitCustomizations.clusterInstance }}
+{{- fail "fluentBitCustomizations.clusterInstance is required. It names the cluster these records came from and cannot be defaulted." }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap
@@ -52,7 +52,7 @@ data:
     [FILTER]
         Name modify
         Match kube.*
-        Set openchoreo_cluster_instance {{ (index .Values "fluent-bit").clusterInstance }}
+        Set openchoreo_cluster_instance {{ .Values.fluentBitCustomizations.clusterInstance }}
 {{- if .Values.auditLogs.enabled }}
 
 {{- range $p := .Values.auditLogs.producers }}
