@@ -80,7 +80,7 @@ func TestQueryEvents_ComponentScope_EmptyNamespace(t *testing.T) {
 	body := gen.EventsQueryRequest{
 		StartTime:   time.Now(),
 		EndTime:     time.Now(),
-		SearchScope: searchScope,
+		SearchScope: &searchScope,
 	}
 	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestQueryEvents_ComponentScope_Success(t *testing.T) {
 	body := gen.EventsQueryRequest{
 		StartTime:   time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
 		EndTime:     time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
-		SearchScope: searchScope,
+		SearchScope: &searchScope,
 	}
 
 	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
@@ -120,8 +120,8 @@ func TestQueryEvents_ComponentScope_Success(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected 200 response, got %T", resp)
 	}
-	if queryResp.Total == nil || *queryResp.Total != 1 {
-		t.Fatalf("expected total=1, got %v", queryResp.Total)
+	if queryResp.Total != 1 {
+		t.Fatalf("expected total=1, got %d", queryResp.Total)
 	}
 	if queryResp.Events == nil || len(*queryResp.Events) != 1 {
 		t.Fatalf("expected 1 event, got %v", queryResp.Events)
@@ -165,7 +165,7 @@ func TestQueryEvents_WorkflowScope_Success(t *testing.T) {
 	body := gen.EventsQueryRequest{
 		StartTime:   time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
 		EndTime:     time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
-		SearchScope: searchScope,
+		SearchScope: &searchScope,
 	}
 
 	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
@@ -195,7 +195,7 @@ func TestQueryEvents_SearchError(t *testing.T) {
 	body := gen.EventsQueryRequest{
 		StartTime:   time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
 		EndTime:     time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
-		SearchScope: searchScope,
+		SearchScope: &searchScope,
 	}
 
 	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})

@@ -33,6 +33,7 @@ var auditFilterFields = map[gen.AuditLogFilterValuesRequestFilter]string{
 	"resource.environment": "resource.environment",
 	"resource.project":     "resource.project",
 	"resource.component":   "resource.component",
+	"resource.resource":    "resource.resource",
 	"resource.name":        "resource.name",
 	"action":               "action",
 	"category":             "category",
@@ -248,6 +249,7 @@ func toAuditLogsQueryParams(body *gen.AuditLogsQueryRequest) opensearch.AuditLog
 		params.ResourceEnvironments = derefSlice(body.Resource.Environment)
 		params.ResourceProjects = derefSlice(body.Resource.Project)
 		params.ResourceComponents = derefSlice(body.Resource.Component)
+		params.ResourceResources = derefSlice(body.Resource.Resource)
 		params.ResourceNames = derefSlice(body.Resource.Name)
 	}
 
@@ -305,6 +307,8 @@ func clearAuditFilter(
 		params.ResourceProjects = nil
 	case "resource.component":
 		params.ResourceComponents = nil
+	case "resource.resource":
+		params.ResourceResources = nil
 	case "resource.name":
 		params.ResourceNames = nil
 	case "action":

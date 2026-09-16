@@ -452,7 +452,7 @@ func (h *LogsHandler) executeEventsQuery(ctx context.Context, query map[string]i
 	took := result.Took
 	resp := gen.EventsQueryResponse{
 		Events: &entries,
-		Total:  &total,
+		Total:  total,
 		TookMs: &took,
 	}
 
