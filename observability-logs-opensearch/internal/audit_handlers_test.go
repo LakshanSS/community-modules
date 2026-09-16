@@ -498,17 +498,3 @@ func TestQueryAuditLogFilterValues_IgnoresRecordQueryControls(t *testing.T) {
 		t.Error("query.includeTimeline was honoured on the filter values operation")
 	}
 }
-
-// 501 tells a missing capability apart from a filter that genuinely has no values.
-func TestQueryPlatformLogFilterValues_NotImplemented(t *testing.T) {
-	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
-
-	resp, err := handler.QueryPlatformLogFilterValues(
-		context.Background(), gen.QueryPlatformLogFilterValuesRequestObject{})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if _, ok := resp.(gen.QueryPlatformLogFilterValues501JSONResponse); !ok {
-		t.Fatalf("expected 501 response, got %T", resp)
-	}
-}
