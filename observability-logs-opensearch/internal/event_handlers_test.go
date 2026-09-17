@@ -206,3 +206,311 @@ func TestQueryEvents_SearchError(t *testing.T) {
 		t.Fatalf("expected 500 response, got %T", resp)
 	}
 }
+
+func TestQueryEvents_NoScope_NoReasons(t *testing.T) {
+	handler := NewLogsHandler(nil, nil, nil, nil, nil, testLogger())
+
+	body := gen.EventsQueryRequest{
+		StartTime: time.Now(),
+		EndTime:   time.Now(),
+	}
+	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := resp.(gen.QueryEvents400JSONResponse); !ok {
+		t.Fatalf("expected 400 response when neither searchScope nor reasons is set, got %T", resp)
+	}
+}
+
+func TestQueryEvents_UnscopedReasonSweep_Success(t *testing.T) {
+	server := eventsSearchServer(t)
+	defer server.Close()
+
+	osClient := newTestOSClient(t, server.URL)
+	eqb := osearch.NewQueryBuilder("k8s-events-")
+	handler := NewLogsHandler(osClient, nil, eqb, nil, nil, testLogger())
+
+	reasons := []string{"DeploymentSucceeded", "DeploymentFailed"}
+	body := gen.EventsQueryRequest{
+		StartTime: time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+		Reasons:   &reasons,
+	}
+
+	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	queryResp, ok := resp.(gen.QueryEvents200JSONResponse)
+	if !ok {
+		t.Fatalf("expected 200 response, got %T", resp)
+	}
+	if queryResp.Events == nil || len(*queryResp.Events) != 1 {
+		t.Fatalf("expected 1 event from the unscoped sweep, got %v", queryResp.Events)
+	}
+}
+
+// eventsServerWithHits stands up a fake OpenSearch returning n delivery event hits.
+func eventsServerWithHits(t *testing.T, n, total int) *httptest.Server {
+	t.Helper()
+	hits := make([]map[string]interface{}, 0, n)
+	for i := 0; i < n; i++ {
+		hits = append(hits, map[string]interface{}{
+			"_id":    fmt.Sprintf("ev-%d", i),
+			"_score": 1.0,
+			"_source": map[string]interface{}{
+				"@timestamp": "2026-06-05T12:24:06Z",
+				"body":       "Job completed",
+				"attributes": map[string]interface{}{
+					"k8s.event.reason": "DeploymentSucceeded",
+				},
+			},
+		})
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		resp := map[string]interface{}{
+			"took":      1,
+			"timed_out": false,
+			"hits": map[string]interface{}{
+				"total": map[string]interface{}{"value": total, "relation": "eq"},
+				"hits":  hits,
+			},
+		}
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Errorf("failed to encode response: %v", err)
+		}
+	}))
+}
+
+// queryEventsAtLimit runs a reason-filtered sweep against server at the given limit.
+func queryEventsAtLimit(t *testing.T, serverURL string, limit int) gen.QueryEvents200JSONResponse {
+	t.Helper()
+	osClient := newTestOSClient(t, serverURL)
+	eqb := osearch.NewQueryBuilder("k8s-events-")
+	handler := NewLogsHandler(osClient, nil, eqb, nil, nil, testLogger())
+
+	reasons := []string{"DeploymentSucceeded"}
+	body := gen.EventsQueryRequest{
+		StartTime: time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+		Reasons:   &reasons,
+		Limit:     &limit,
+	}
+
+	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	queryResp, ok := resp.(gen.QueryEvents200JSONResponse)
+	if !ok {
+		t.Fatalf("expected 200 response, got %T", resp)
+	}
+	return queryResp
+}
+
+func TestQueryEvents_TotalExceedsPageWhenTruncated(t *testing.T) {
+	// The caller reads completeness as total against the events returned, so a
+	// window holding more than a page must report the larger figure rather than
+	// the page size -- otherwise a truncated read looks fully drained.
+	server := eventsServerWithHits(t, 1, 5)
+	defer server.Close()
+
+	queryResp := queryEventsAtLimit(t, server.URL, 1)
+	if queryResp.Events == nil || len(*queryResp.Events) != 1 {
+		t.Fatalf("expected 1 event, got %v", queryResp.Events)
+	}
+	if queryResp.Total != 5 {
+		t.Errorf("expected total=5 for a truncated read, got %d", queryResp.Total)
+	}
+}
+
+func TestQueryEvents_TotalMatchesPageWhenWindowRead(t *testing.T) {
+	// Equal is what tells the caller it may advance past the window.
+	server := eventsServerWithHits(t, 1, 1)
+	defer server.Close()
+
+	queryResp := queryEventsAtLimit(t, server.URL, 10)
+	if queryResp.Events == nil || len(*queryResp.Events) != 1 {
+		t.Fatalf("expected 1 event, got %v", queryResp.Events)
+	}
+	if queryResp.Total != 1 {
+		t.Errorf("expected total=1 for a fully read window, got %d", queryResp.Total)
+	}
+}
+
+// TestQueryEvents_DoesNotSplitATimestampGroup is the regression test for silent
+// loss on resume. A caller resumes from the last timestamp it was given, so if a
+// full page ends part-way through a group of events sharing that timestamp, the
+// unreturned members of that group are never read by anyone: the next query
+// starts at their timestamp and the caller has already moved past it.
+//
+// The adapter therefore has to finish the group before returning, even where
+// that takes the page past limit.
+func TestQueryEvents_DoesNotSplitATimestampGroup(t *testing.T) {
+	const (
+		earlier  = "2026-06-05T12:24:05Z"
+		boundary = "2026-06-05T12:24:06Z"
+	)
+	// A group of three at the boundary, against limit=2: bigger than both the page
+	// and the follow-up page, so the follow-up has to be paged to finish it.
+	all := map[string]string{
+		"ev-1": earlier,
+		"ev-2": boundary,
+		"ev-3": boundary,
+		"ev-4": boundary,
+	}
+	order := []string{"ev-1", "ev-2", "ev-3", "ev-4"}
+
+	server := eventsBodyAwareServer(t, all, order)
+	defer server.Close()
+
+	osClient := newTestOSClient(t, server.URL)
+	eqb := osearch.NewQueryBuilder("k8s-events-")
+	handler := NewLogsHandler(osClient, nil, eqb, nil, nil, testLogger())
+
+	reasons := []string{"DeploymentSucceeded"}
+	limit := 2
+	body := gen.EventsQueryRequest{
+		StartTime: time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2026, 6, 6, 0, 0, 0, 0, time.UTC),
+		Reasons:   &reasons,
+		Limit:     &limit,
+	}
+
+	resp, err := handler.QueryEvents(context.Background(), gen.QueryEventsRequestObject{Body: &body})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	queryResp, ok := resp.(gen.QueryEvents200JSONResponse)
+	if !ok {
+		t.Fatalf("expected 200 response, got %T", resp)
+	}
+	if queryResp.Events == nil {
+		t.Fatal("expected events")
+	}
+	got := *queryResp.Events
+	// The whole group comes back, not the two that fit the page.
+	if len(got) != 4 {
+		t.Fatalf("expected the boundary group finished (4 events), got %d", len(got))
+	}
+	// And total describes the page that was actually returned, so the caller reads
+	// the window as fully read rather than re-sweeping it forever.
+	if queryResp.Total != len(got) {
+		t.Fatalf("expected total=%d to match the events returned, got %d", len(got), queryResp.Total)
+	}
+}
+
+// eventsBodyAwareServer stands up a fake OpenSearch that honours the parts of the
+// request body this adapter relies on: the @timestamp range, size, from and
+// track_total_hits. The earlier mock ignored the body and so returned whole
+// groups however small a page was asked for, which hid a follow-up query that
+// could itself be truncated.
+func eventsBodyAwareServer(t *testing.T, at map[string]string, order []string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode search body: %v", err)
+		}
+
+		gte, lte := eventsRangeBounds(req)
+		matched := make([]string, 0, len(order))
+		for _, id := range order {
+			ts := at[id]
+			if gte != "" && ts < gte {
+				continue
+			}
+			if lte != "" && ts > lte {
+				continue
+			}
+			matched = append(matched, id)
+		}
+
+		size := intField(req, "size", 10)
+		from := intField(req, "from", 0)
+		page := matched
+		if from < len(page) {
+			page = page[from:]
+		} else {
+			page = nil
+		}
+		if size >= 0 && len(page) > size {
+			page = page[:size]
+		}
+
+		// track_total_hits caps the count, as OpenSearch does.
+		total := len(matched)
+		if cap, ok := req["track_total_hits"].(float64); ok && total > int(cap) {
+			total = int(cap)
+		}
+
+		hits := make([]map[string]interface{}, 0, len(page))
+		for _, id := range page {
+			hits = append(hits, map[string]interface{}{
+				"_id":    id,
+				"_score": 1.0,
+				"_source": map[string]interface{}{
+					"@timestamp": at[id],
+					"body":       "Job completed",
+					"attributes": map[string]interface{}{"k8s.event.reason": "DeploymentSucceeded"},
+				},
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		out := map[string]interface{}{
+			"took":      1,
+			"timed_out": false,
+			"hits": map[string]interface{}{
+				"total": map[string]interface{}{"value": total, "relation": "eq"},
+				"hits":  hits,
+			},
+		}
+		if err := json.NewEncoder(w).Encode(out); err != nil {
+			t.Errorf("failed to encode response: %v", err)
+		}
+	}))
+}
+
+// eventsRangeBounds digs the @timestamp bounds out of a query body. The adapter
+// writes gte/lt for a window and gte/lte for a single timestamp group.
+func eventsRangeBounds(req map[string]interface{}) (string, string) {
+	query, _ := req["query"].(map[string]interface{})
+	boolQ, _ := query["bool"].(map[string]interface{})
+	must, _ := boolQ["must"].([]interface{})
+	for _, cond := range must {
+		m, ok := cond.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		rng, ok := m["range"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		bounds, ok := rng["@timestamp"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		gte, _ := bounds["gte"].(string)
+		if lte, ok := bounds["lte"].(string); ok {
+			return gte, lte
+		}
+		// A window uses an exclusive upper bound; trim it so string comparison
+		// keeps it exclusive.
+		if lt, ok := bounds["lt"].(string); ok {
+			return gte, lt[:len(lt)-1] + string(rune(lt[len(lt)-1]-1))
+		}
+		return gte, ""
+	}
+	return "", ""
+}
+
+func intField(req map[string]interface{}, key string, def int) int {
+	if v, ok := req[key].(float64); ok {
+		return int(v)
+	}
+	return def
+}

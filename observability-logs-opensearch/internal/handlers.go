@@ -312,9 +312,21 @@ func (h *LogsHandler) QueryEvents(ctx context.Context, request gen.QueryEventsRe
 			Message: ptr("request body is required"),
 		}, nil
 	}
+	req := request.Body
+
+	if req.SearchScope == nil {
+		reasons := eventReasonsOf(req)
+		if len(reasons) == 0 {
+			return gen.QueryEvents400JSONResponse{
+				Title:   ptr(gen.BadRequest),
+				Message: ptr("searchScope is required unless reasons is set for an unscoped sweep"),
+			}, nil
+		}
+		return h.queryUnscopedEvents(ctx, req, reasons)
+	}
 
 	// Try to interpret the search scope as a WorkflowSearchScope first
-	workflowScope, err := request.Body.SearchScope.AsWorkflowSearchScope()
+	workflowScope, err := req.SearchScope.AsWorkflowSearchScope()
 	if err == nil && workflowScope.WorkflowRunName != nil {
 		if strings.TrimSpace(workflowScope.Namespace) == "" || strings.TrimSpace(*workflowScope.WorkflowRunName) == "" {
 			return gen.QueryEvents400JSONResponse{
@@ -323,11 +335,11 @@ func (h *LogsHandler) QueryEvents(ctx context.Context, request gen.QueryEventsRe
 			}, nil
 		}
 
-		return h.queryWorkflowEvents(ctx, request.Body, &workflowScope)
+		return h.queryWorkflowEvents(ctx, req, &workflowScope)
 	}
 
 	// Fall back to ComponentSearchScope
-	scope, err := request.Body.SearchScope.AsComponentSearchScope()
+	scope, err := req.SearchScope.AsComponentSearchScope()
 	if err != nil || strings.TrimSpace(scope.Namespace) == "" {
 		return gen.QueryEvents400JSONResponse{
 			Title:   ptr(gen.BadRequest),
@@ -335,17 +347,38 @@ func (h *LogsHandler) QueryEvents(ctx context.Context, request gen.QueryEventsRe
 		}, nil
 	}
 
-	return h.queryComponentEvents(ctx, request.Body, &scope)
+	return h.queryComponentEvents(ctx, req, &scope)
+}
+
+// eventReasonsOf returns the request's reasons filter, or nil when unset.
+func eventReasonsOf(req *gen.EventsQueryRequest) []string {
+	if req.Reasons == nil {
+		return nil
+	}
+	return *req.Reasons
+}
+
+// eventLimitOf returns the request's limit, defaulting to 100 to match the
+// query builders' own default (kept in sync so the "page was full" check in
+// executeEventsQuery reflects the limit actually sent to OpenSearch).
+func eventLimitOf(req *gen.EventsQueryRequest) int {
+	if req.Limit != nil && *req.Limit > 0 {
+		return *req.Limit
+	}
+	return 100
 }
 
 func (h *LogsHandler) queryComponentEvents(ctx context.Context, req *gen.EventsQueryRequest, scope *gen.ComponentSearchScope) (gen.QueryEventsResponseObject, error) {
 	startTime := req.StartTime.Format(time.RFC3339)
 	endTime := req.EndTime.Format(time.RFC3339)
 
+	limit := eventLimitOf(req)
 	params := opensearch.EventsQueryParams{
 		StartTime:     startTime,
 		EndTime:       endTime,
 		NamespaceName: scope.Namespace,
+		Limit:         limit,
+		Reasons:       eventReasonsOf(req),
 	}
 	if scope.ProjectUid != nil {
 		params.ProjectID = *scope.ProjectUid
@@ -355,9 +388,6 @@ func (h *LogsHandler) queryComponentEvents(ctx context.Context, req *gen.EventsQ
 	}
 	if scope.ComponentUid != nil {
 		params.ComponentID = *scope.ComponentUid
-	}
-	if req.Limit != nil {
-		params.Limit = *req.Limit
 	}
 	if req.SortOrder != nil {
 		params.SortOrder = string(*req.SortOrder)
@@ -375,26 +405,26 @@ func (h *LogsHandler) queryComponentEvents(ctx context.Context, req *gen.EventsQ
 		}, nil
 	}
 
-	return h.executeEventsQuery(ctx, query, startTime, endTime, scope.Namespace)
+	return h.executeEventsQuery(ctx, query, startTime, endTime, scope.Namespace, limit)
 }
 
 func (h *LogsHandler) queryWorkflowEvents(ctx context.Context, req *gen.EventsQueryRequest, scope *gen.WorkflowSearchScope) (gen.QueryEventsResponseObject, error) {
 	startTime := req.StartTime.Format(time.RFC3339)
 	endTime := req.EndTime.Format(time.RFC3339)
 
+	limit := eventLimitOf(req)
 	params := opensearch.WorkflowEventsQueryParams{
 		StartTime:     startTime,
 		EndTime:       endTime,
 		NamespaceName: scope.Namespace,
+		Limit:         limit,
+		Reasons:       eventReasonsOf(req),
 	}
 	if scope.WorkflowRunName != nil {
 		params.WorkflowRunID = *scope.WorkflowRunName
 	}
 	if scope.TaskName != nil {
 		params.TaskName = *scope.TaskName
-	}
-	if req.Limit != nil {
-		params.Limit = *req.Limit
 	}
 	if req.SortOrder != nil {
 		params.SortOrder = string(*req.SortOrder)
@@ -412,11 +442,49 @@ func (h *LogsHandler) queryWorkflowEvents(ctx context.Context, req *gen.EventsQu
 		}, nil
 	}
 
-	return h.executeEventsQuery(ctx, query, startTime, endTime, scope.Namespace)
+	return h.executeEventsQuery(ctx, query, startTime, endTime, scope.Namespace, limit)
+}
+
+// queryUnscopedEvents runs a reason-filtered sweep across every namespace,
+// for machine consumers (e.g. the Delivery Insights aggregator) reading
+// controller-emitted events rather than interactively browsing one component.
+func (h *LogsHandler) queryUnscopedEvents(ctx context.Context, req *gen.EventsQueryRequest, reasons []string) (gen.QueryEventsResponseObject, error) {
+	startTime := req.StartTime.Format(time.RFC3339)
+	endTime := req.EndTime.Format(time.RFC3339)
+
+	limit := eventLimitOf(req)
+	params := opensearch.ReasonFilteredEventsQueryParams{
+		StartTime: startTime,
+		EndTime:   endTime,
+		Reasons:   reasons,
+		Limit:     limit,
+	}
+	if req.SortOrder != nil {
+		params.SortOrder = string(*req.SortOrder)
+	}
+
+	query, err := h.eventsQueryBuilder.BuildReasonFilteredEventsQuery(params)
+	if err != nil {
+		h.logger.Error("Failed to build unscoped events query",
+			slog.String("function", "QueryEvents"),
+			slog.Any("error", err),
+		)
+		return gen.QueryEvents500JSONResponse{
+			Title:   ptr(gen.InternalServerError),
+			Message: ptr("internal server error"),
+		}, nil
+	}
+
+	return h.executeEventsQuery(ctx, query, startTime, endTime, "", limit)
 }
 
 // executeEventsQuery runs an events query against the events indices and assembles the response.
-func (h *LogsHandler) executeEventsQuery(ctx context.Context, query map[string]interface{}, startTime, endTime, namespace string) (gen.QueryEventsResponseObject, error) {
+// limit is the size actually sent to OpenSearch; the query counts one past it, so a total greater
+// than the events returned tells the caller the window holds more than it just read and must be
+// resumed from the last event's timestamp rather than treated as read.
+func (h *LogsHandler) executeEventsQuery(
+	ctx context.Context, query map[string]interface{}, startTime, endTime, namespace string, limit int,
+) (gen.QueryEventsResponseObject, error) {
 	indices, err := h.eventsQueryBuilder.GenerateIndices(startTime, endTime)
 	if err != nil {
 		h.logger.Error("Failed to generate event indices",
@@ -442,13 +510,58 @@ func (h *LogsHandler) executeEventsQuery(ctx context.Context, query map[string]i
 		}, nil
 	}
 
-	entries := make([]gen.EventEntry, 0, len(result.Hits.Hits))
-	for _, hit := range result.Hits.Hits {
+	hits := result.Hits.Hits
+	// A page cut at limit can land inside a group of events sharing one
+	// timestamp. The caller resumes at the last timestamp it was handed, so the
+	// unreturned members of that group would never be read by anyone -- finish
+	// the group before returning, even where that takes the page past limit.
+	pageBeforeExtension := len(hits)
+	if limit > 0 && len(hits) >= limit {
+		completed, err := h.completeTimestampGroup(ctx, indices, query, hits, limit)
+		if err != nil {
+			h.logger.Error("Failed to complete the boundary timestamp group",
+				slog.String("function", "QueryEvents"),
+				slog.Any("error", err),
+			)
+			return gen.QueryEvents500JSONResponse{
+				Title:   ptr(gen.InternalServerError),
+				Message: ptr("internal server error"),
+			}, nil
+		}
+		hits = completed
+	}
+
+	entries := make([]gen.EventEntry, 0, len(hits))
+	for _, hit := range hits {
 		eventEntry := opensearch.ParseEventHit(hit)
 		entries = append(entries, toEventEntry(&eventEntry))
 	}
 
+	// total is how the caller learns whether it read the whole window: equal to the
+	// events returned means it did, greater means the read stopped short. The query
+	// asks OpenSearch to count to limit+1 (see eventsTrackTotalHits) so that
+	// "exactly a full page" and "more than a page" are distinguishable; without
+	// that the count saturates at 10000 and a caller could read a truncated window
+	// as fully read.
 	total := result.Hits.Total.Value
+	// Completing the boundary group hands back more events than the search counted,
+	// so that count no longer describes this page -- left alone it can report fewer
+	// events than are in the body, and cannot say whether anything follows the
+	// group. Re-count as far as the page actually returned.
+	if len(hits) > pageBeforeExtension {
+		recounted, err := h.countEvents(ctx, indices, query, len(hits)+1)
+		if err != nil {
+			h.logger.Error("Failed to re-count events after completing the boundary group",
+				slog.String("function", "QueryEvents"),
+				slog.Any("error", err),
+			)
+			return gen.QueryEvents500JSONResponse{
+				Title:   ptr(gen.InternalServerError),
+				Message: ptr("internal server error"),
+			}, nil
+		}
+		total = recounted
+	}
 	took := result.Took
 	resp := gen.EventsQueryResponse{
 		Events: &entries,
@@ -457,6 +570,85 @@ func (h *LogsHandler) executeEventsQuery(ctx context.Context, query map[string]i
 	}
 
 	return gen.QueryEvents200JSONResponse(resp), nil
+}
+
+// maxBoundaryGroup bounds how far completeTimestampGroup will page a single
+// timestamp group. It matches OpenSearch's default index.max_result_window, past
+// which from+size is refused anyway. Reaching it needs more than 10000 events
+// stamped at the same instant, which no real event stream produces.
+const maxBoundaryGroup = 10000
+
+// completeTimestampGroup extends a full page so it ends on a timestamp boundary.
+//
+// It re-reads every event bearing the page's last timestamp and appends the ones
+// the page did not already carry, matched on document id. Returning a page that
+// stops mid-group is what loses events: the caller resumes at that timestamp and
+// the remainder falls between the two reads.
+func (h *LogsHandler) completeTimestampGroup(
+	ctx context.Context, indices []string, query map[string]interface{},
+	hits []opensearch.Hit, limit int,
+) ([]opensearch.Hit, error) {
+	last := opensearch.ParseEventHit(hits[len(hits)-1])
+	if last.Timestamp.IsZero() {
+		// Nothing to bound the follow-up on; returning the page unchanged is no
+		// worse than the read that produced it.
+		return hits, nil
+	}
+
+	ts := last.Timestamp.UTC().Format(time.RFC3339Nano)
+	seen := make(map[string]struct{}, len(hits))
+	for _, hit := range hits {
+		seen[hit.ID] = struct{}{}
+	}
+
+	// Page the follow-up: a group bigger than one page would be cut short by the
+	// same truncation this is here to undo.
+	for from := 0; from < maxBoundaryGroup; from += limit {
+		boundaryQuery, err := h.eventsQueryBuilder.BuildEventsAtTimestampQuery(query, ts, limit, from)
+		if err != nil {
+			return nil, err
+		}
+		boundary, err := h.osClient.Search(ctx, indices, boundaryQuery)
+		if err != nil {
+			return nil, err
+		}
+		for _, hit := range boundary.Hits.Hits {
+			if _, dup := seen[hit.ID]; dup {
+				continue
+			}
+			seen[hit.ID] = struct{}{}
+			hits = append(hits, hit)
+		}
+		if len(boundary.Hits.Hits) < limit {
+			return hits, nil
+		}
+	}
+
+	// Only reachable if more than maxBoundaryGroup events share one timestamp.
+	// The page is returned as far as it was read; the re-count in the caller then
+	// exceeds it, so the window reads as incomplete rather than as fully read.
+	h.logger.Error("Boundary timestamp group exceeds the paging bound; the group may still be split",
+		slog.String("function", "QueryEvents"),
+		slog.String("timestamp", ts),
+		slog.Int("bound", maxBoundaryGroup),
+	)
+	return hits, nil
+}
+
+// countEvents answers how many events the window holds, counted no further than
+// trackTotalHits. size is zero: only the count is wanted.
+func (h *LogsHandler) countEvents(
+	ctx context.Context, indices []string, query map[string]interface{}, trackTotalHits int,
+) (int, error) {
+	countQuery, err := h.eventsQueryBuilder.BuildEventsCountQuery(query, trackTotalHits)
+	if err != nil {
+		return 0, err
+	}
+	counted, err := h.osClient.Search(ctx, indices, countQuery)
+	if err != nil {
+		return 0, err
+	}
+	return counted.Hits.Total.Value, nil
 }
 
 // CreateAlertRule implements POST /api/v1alpha1/alerts/rules.

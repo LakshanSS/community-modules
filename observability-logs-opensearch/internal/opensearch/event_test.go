@@ -47,6 +47,43 @@ func hasTermFilter(conds []interface{}, field, value string) bool {
 	return false
 }
 
+// hasTermsFilter reports whether the must conditions contain a terms filter on
+// field matching exactly the given values (order-independent).
+func hasTermsFilter(conds []interface{}, field string, values ...string) bool {
+	for _, c := range conds {
+		m, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		terms, ok := m["terms"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		got, ok := terms[field].([]string)
+		if !ok || len(got) != len(values) {
+			continue
+		}
+		// Counted, not a set: with a set, got ["A","A"] satisfies want ["A","B"]
+		// because both values are present and the lengths agree.
+		want := map[string]int{}
+		for _, v := range values {
+			want[v]++
+		}
+		matched := true
+		for _, v := range got {
+			if want[v] == 0 {
+				matched = false
+				break
+			}
+			want[v]--
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 func hasWildcardFilter(conds []interface{}, field, value string) bool {
 	for _, c := range conds {
 		m, ok := c.(map[string]interface{})
@@ -118,12 +155,102 @@ func TestBuildComponentEventsQuery_Defaults(t *testing.T) {
 		t.Errorf("expected default size=100, got %v", got)
 	}
 	sort, ok := query["sort"].([]map[string]interface{})
-	if !ok || len(sort) != 1 {
+	if !ok || len(sort) != 2 {
 		t.Fatalf("unexpected sort: %v", query["sort"])
 	}
 	ts, ok := sort[0][EvTimestamp].(map[string]interface{})
 	if !ok || ts["order"] != "desc" {
 		t.Errorf("expected default sort order desc, got %v", sort[0])
+	}
+	tiebreaker, ok := sort[1]["_seq_no"].(map[string]interface{})
+	if !ok || tiebreaker["order"] != "desc" {
+		t.Errorf("expected _seq_no tiebreaker desc, got %v", sort[1])
+	}
+	if _, present := query["search_after"]; present {
+		t.Errorf("events queries must not carry search_after; resumption is by timestamp")
+	}
+}
+
+func TestBuildComponentEventsQuery_StartBoundIsInclusive(t *testing.T) {
+	// A caller reading a window in parts resumes AT the last timestamp it was
+	// handed. An exclusive start drops every event bearing that timestamp,
+	// including any the previous read did not return -- silently, because the
+	// sweep still advances.
+	qb := NewQueryBuilder("k8s-events-")
+	query, err := qb.BuildComponentEventsQuery(EventsQueryParams{
+		StartTime:     "2026-06-05T00:00:00Z",
+		EndTime:       "2026-06-06T00:00:00Z",
+		NamespaceName: "default",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	conds := mustConditions(t, query)
+	var bounds map[string]interface{}
+	for _, c := range conds {
+		m, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if rng, ok := m["range"].(map[string]interface{}); ok {
+			if b, ok := rng[EvTimestamp].(map[string]interface{}); ok {
+				bounds = b
+			}
+		}
+	}
+	if bounds == nil {
+		t.Fatalf("no %s range filter found in %v", EvTimestamp, conds)
+	}
+	if _, exclusive := bounds["gt"]; exclusive {
+		t.Errorf("events start bound must be inclusive (gte), got gt: %v", bounds)
+	}
+	if bounds["gte"] != "2026-06-05T00:00:00Z" {
+		t.Errorf("expected gte start bound, got %v", bounds)
+	}
+	// The end stays exclusive so consecutive windows do not overlap.
+	if bounds["lt"] != "2026-06-06T00:00:00Z" {
+		t.Errorf("expected lt end bound, got %v", bounds)
+	}
+}
+
+func TestBuildComponentEventsQuery_CountsPastTheLimit(t *testing.T) {
+	// hits.total saturates at 10000 by default and becomes a floor, not a count.
+	// A caller derives completeness from total against the events returned, so the
+	// count has to reach limit+1 -- enough to tell "exactly a full page" from
+	// "more than a page", and no more.
+	qb := NewQueryBuilder("k8s-events-")
+	query, err := qb.BuildComponentEventsQuery(EventsQueryParams{
+		StartTime:     "2026-06-05T00:00:00Z",
+		EndTime:       "2026-06-06T00:00:00Z",
+		NamespaceName: "default",
+		Limit:         50,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := query["track_total_hits"]; got != 51 {
+		t.Errorf("expected track_total_hits=51 for limit=50, got %v", got)
+	}
+	if got := query["size"]; got != 50 {
+		t.Errorf("expected size=50, got %v", got)
+	}
+}
+
+func TestBuildComponentEventsQuery_Reasons(t *testing.T) {
+	qb := NewQueryBuilder("k8s-events-")
+	query, err := qb.BuildComponentEventsQuery(EventsQueryParams{
+		StartTime:     "2026-06-05T00:00:00Z",
+		EndTime:       "2026-06-06T00:00:00Z",
+		NamespaceName: "default",
+		Reasons:       []string{"DeploymentSucceeded", "DeploymentFailed"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	conds := mustConditions(t, query)
+	if !hasTermsFilter(conds, EvReason, "DeploymentSucceeded", "DeploymentFailed") {
+		t.Errorf("missing reasons terms filter on %s: %v", EvReason, conds)
 	}
 }
 
@@ -188,6 +315,70 @@ func TestBuildWorkflowEventsQuery_MissingRequired(t *testing.T) {
 		NamespaceName: "default",
 	}); err == nil {
 		t.Errorf("expected error when workflow run ID is missing")
+	}
+}
+
+func TestBuildWorkflowEventsQuery_Reasons(t *testing.T) {
+	qb := NewQueryBuilder("k8s-events-")
+	query, err := qb.BuildWorkflowEventsQuery(WorkflowEventsQueryParams{
+		StartTime:     "2026-06-05T00:00:00Z",
+		EndTime:       "2026-06-06T00:00:00Z",
+		NamespaceName: "default",
+		WorkflowRunID: "build-run-123",
+		Reasons:       []string{"Completed"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	conds := mustConditions(t, query)
+	if !hasTermsFilter(conds, EvReason, "Completed") {
+		t.Errorf("missing reasons terms filter on %s: %v", EvReason, conds)
+	}
+}
+
+func TestBuildReasonFilteredEventsQuery(t *testing.T) {
+	qb := NewQueryBuilder("k8s-events-")
+	query, err := qb.BuildReasonFilteredEventsQuery(ReasonFilteredEventsQueryParams{
+		StartTime: "2026-06-05T00:00:00Z",
+		EndTime:   "2026-06-06T00:00:00Z",
+		Reasons:   []string{"DeploymentStarted", "DeploymentSucceeded"},
+		Limit:     500,
+		SortOrder: "asc",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := query["size"]; got != 500 {
+		t.Errorf("expected size=500, got %v", got)
+	}
+
+	conds := mustConditions(t, query)
+	if !hasTermsFilter(conds, EvReason, "DeploymentStarted", "DeploymentSucceeded") {
+		t.Errorf("missing reasons terms filter on %s: %v", EvReason, conds)
+	}
+	// No namespace/component/environment scoping: an unscoped sweep must not
+	// restrict to any single namespace.
+	if hasTermFilter(conds, EvNamespaceName, "default") {
+		t.Errorf("unscoped query should not filter by namespace: %v", conds)
+	}
+}
+
+func TestBuildReasonFilteredEventsQuery_MissingReasons(t *testing.T) {
+	qb := NewQueryBuilder("k8s-events-")
+	if _, err := qb.BuildReasonFilteredEventsQuery(ReasonFilteredEventsQueryParams{
+		StartTime: "2026-06-05T00:00:00Z",
+		EndTime:   "2026-06-06T00:00:00Z",
+	}); err == nil {
+		t.Errorf("expected error when reasons is empty")
+	}
+}
+
+func TestBuildReasonFilteredEventsQuery_MissingTimeRange(t *testing.T) {
+	qb := NewQueryBuilder("k8s-events-")
+	if _, err := qb.BuildReasonFilteredEventsQuery(ReasonFilteredEventsQueryParams{
+		Reasons: []string{"DeploymentStarted"},
+	}); err == nil {
+		t.Errorf("expected error when time range is missing")
 	}
 }
 

@@ -28,25 +28,40 @@ type EventEntry struct {
 
 // EventsQueryParams holds query parameters for the component-scoped events query.
 type EventsQueryParams struct {
-	StartTime     string `json:"startTime"`
-	EndTime       string `json:"endTime"`
-	NamespaceName string `json:"namespaceName"`
-	ProjectID     string `json:"projectId,omitempty"`
-	ComponentID   string `json:"componentId,omitempty"`
-	EnvironmentID string `json:"environmentId,omitempty"`
-	Limit         int    `json:"limit"`
-	SortOrder     string `json:"sortOrder"`
+	StartTime     string   `json:"startTime"`
+	EndTime       string   `json:"endTime"`
+	NamespaceName string   `json:"namespaceName"`
+	ProjectID     string   `json:"projectId,omitempty"`
+	ComponentID   string   `json:"componentId,omitempty"`
+	EnvironmentID string   `json:"environmentId,omitempty"`
+	Limit         int      `json:"limit"`
+	SortOrder     string   `json:"sortOrder"`
+	Reasons       []string `json:"reasons,omitempty"`
 }
 
 // WorkflowEventsQueryParams holds query parameters for the workflow-scoped events query.
 type WorkflowEventsQueryParams struct {
-	StartTime     string `json:"startTime"`
-	EndTime       string `json:"endTime"`
-	NamespaceName string `json:"namespaceName"`
-	WorkflowRunID string `json:"workflowRunId"`
-	TaskName      string `json:"taskName,omitempty"`
-	Limit         int    `json:"limit"`
-	SortOrder     string `json:"sortOrder"`
+	StartTime     string   `json:"startTime"`
+	EndTime       string   `json:"endTime"`
+	NamespaceName string   `json:"namespaceName"`
+	WorkflowRunID string   `json:"workflowRunId"`
+	TaskName      string   `json:"taskName,omitempty"`
+	Limit         int      `json:"limit"`
+	SortOrder     string   `json:"sortOrder"`
+	Reasons       []string `json:"reasons,omitempty"`
+}
+
+// ReasonFilteredEventsQueryParams holds query parameters for an unscoped,
+// reason-filtered events sweep: no namespace/component/environment restriction,
+// used by machine consumers (e.g. the Delivery Insights aggregator) that read
+// controller-emitted events across every namespace rather than one component's
+// scope. Reasons is required since it is the only filter narrowing the sweep.
+type ReasonFilteredEventsQueryParams struct {
+	StartTime string   `json:"startTime"`
+	EndTime   string   `json:"endTime"`
+	Reasons   []string `json:"reasons"`
+	Limit     int      `json:"limit"`
+	SortOrder string   `json:"sortOrder"`
 }
 
 // ParseEventHit converts a search hit to an EventEntry struct.

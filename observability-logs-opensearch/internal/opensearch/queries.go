@@ -252,6 +252,156 @@ func (qb *QueryBuilder) BuildWorkflowRunLogsQuery(params WorkflowRunQueryParams)
 	return query
 }
 
+// reasonsFilter builds a terms filter restricting results to the given event
+// reasons (e.g. DeploymentSucceeded), or nil if reasons is empty.
+func reasonsFilter(reasons []string) map[string]interface{} {
+	if len(reasons) == 0 {
+		return nil
+	}
+	return map[string]interface{}{
+		"terms": map[string]interface{}{
+			EvReason: reasons,
+		},
+	}
+}
+
+// eventsSort returns the sort clause shared by every events query.
+//
+// Sorting on timestamp alone is not stable when multiple events share one: the
+// order among them can differ between two identical searches, so a caller that
+// resumes from the last returned timestamp could see a different subset the
+// second time. _seq_no breaks the tie deterministically (a numeric,
+// always-doc-valued metadata field — unlike _id, it needs no fielddata and is
+// safe to sort on).
+//
+// The clause is applied before "size", so OpenSearch truncates a window by
+// dropping the events furthest from the sort direction, never an arbitrary
+// subset. That is what makes resume-by-timestamp safe for the caller.
+func eventsSort(sortOrder string) []map[string]interface{} {
+	return []map[string]interface{}{
+		{EvTimestamp: map[string]interface{}{"order": sortOrder}},
+		{"_seq_no": map[string]interface{}{"order": sortOrder}},
+	}
+}
+
+// addEventsTimeRangeFilter bounds an events query as [startTime, endTime).
+//
+// The start is inclusive, unlike addTimeRangeFilter which the logs queries use.
+// A caller reading a window in parts resumes at the last timestamp it was
+// handed, so an exclusive start would drop every event bearing it -- including
+// any the previous read did not return.
+func addEventsTimeRangeFilter(mustConditions []map[string]interface{}, startTime, endTime string) []map[string]interface{} {
+	if startTime != "" && endTime != "" {
+		mustConditions = append(mustConditions, map[string]interface{}{
+			"range": map[string]interface{}{
+				EvTimestamp: map[string]interface{}{
+					"gte": startTime,
+					"lt":  endTime,
+				},
+			},
+		})
+	}
+	return mustConditions
+}
+
+// BuildEventsAtTimestampQuery builds the follow-up that completes a timestamp
+// group: every event bearing exactly ts, so a page cut at limit can be extended
+// to a group boundary rather than splitting one.
+//
+// size and from page that follow-up. A group larger than one page would itself be
+// truncated otherwise, which is the same split this exists to prevent, only moved
+// one query along.
+func (qb *QueryBuilder) BuildEventsAtTimestampQuery(
+	base map[string]interface{}, ts string, size, from int,
+) (map[string]interface{}, error) {
+	encoded, err := json.Marshal(base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone events query: %w", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return nil, fmt.Errorf("failed to clone events query: %w", err)
+	}
+
+	queryClause, ok := out["query"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("events query has no query clause to rebound")
+	}
+	boolQuery, ok := queryClause["bool"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("events query has no bool clause to rebound")
+	}
+	must, ok := boolQuery["must"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("events query has no must clause to rebound")
+	}
+	rebounded := false
+	for _, cond := range must {
+		m, isMap := cond.(map[string]interface{})
+		if !isMap {
+			continue
+		}
+		rng, isRange := m["range"].(map[string]interface{})
+		if !isRange {
+			continue
+		}
+		if _, onTimestamp := rng[EvTimestamp]; !onTimestamp {
+			continue
+		}
+		rng[EvTimestamp] = map[string]interface{}{"gte": ts, "lte": ts}
+		rebounded = true
+	}
+	if !rebounded {
+		return nil, fmt.Errorf("events query has no %s range to rebound", EvTimestamp)
+	}
+
+	out["size"] = size
+	if from > 0 {
+		out["from"] = from
+	}
+	// The caller only needs the group itself, not a count of it.
+	delete(out, "track_total_hits")
+	return out, nil
+}
+
+// BuildEventsCountQuery builds a count-only form of an events query, asked to
+// count as far as trackTotalHits.
+//
+// It exists because the page a caller is handed can be extended past limit to a
+// timestamp boundary, and hits.total from the original search was only counted
+// as far as that limit -- so it can come back smaller than the page it is meant
+// to describe. Re-counting against the page actually returned is what keeps
+// "total equals the events returned" meaning the window was read.
+func (qb *QueryBuilder) BuildEventsCountQuery(
+	base map[string]interface{}, trackTotalHits int,
+) (map[string]interface{}, error) {
+	encoded, err := json.Marshal(base)
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone events query: %w", err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return nil, fmt.Errorf("failed to clone events query: %w", err)
+	}
+	out["size"] = 0
+	delete(out, "from")
+	delete(out, "sort")
+	out["track_total_hits"] = trackTotalHits
+	return out, nil
+}
+
+// eventsTrackTotalHits is how far OpenSearch is asked to count matches for an
+// events query.
+//
+// hits.total saturates at 10000 by default and reports relation "gte" once it
+// does, so it is a floor rather than a count. Callers read completeness from
+// total against the events returned, and that only needs to distinguish
+// "exactly a full page" from "more than a page" -- counting to limit+1 answers
+// that exactly, without the full-match-set scan track_total_hits: true costs.
+func eventsTrackTotalHits(limit int) int {
+	return limit + 1
+}
+
 // BuildComponentEventsQuery builds a query for the API component events endpoint.
 func (qb *QueryBuilder) BuildComponentEventsQuery(params EventsQueryParams) (map[string]interface{}, error) {
 	if params.StartTime == "" || params.EndTime == "" || params.NamespaceName == "" {
@@ -259,7 +409,7 @@ func (qb *QueryBuilder) BuildComponentEventsQuery(params EventsQueryParams) (map
 	}
 	mustConditions := []map[string]interface{}{}
 
-	mustConditions = addTimeRangeFilter(mustConditions, params.StartTime, params.EndTime)
+	mustConditions = addEventsTimeRangeFilter(mustConditions, params.StartTime, params.EndTime)
 
 	namespaceFilter := map[string]interface{}{
 		"term": map[string]interface{}{
@@ -292,6 +442,10 @@ func (qb *QueryBuilder) BuildComponentEventsQuery(params EventsQueryParams) (map
 		})
 	}
 
+	if filter := reasonsFilter(params.Reasons); filter != nil {
+		mustConditions = append(mustConditions, filter)
+	}
+
 	limit := params.Limit
 	if limit <= 0 {
 		limit = 100
@@ -302,20 +456,57 @@ func (qb *QueryBuilder) BuildComponentEventsQuery(params EventsQueryParams) (map
 		sortOrder = "desc"
 	}
 
+	sort := eventsSort(sortOrder)
 	query := map[string]interface{}{
-		"size": limit,
+		"size":             limit,
+		"track_total_hits": eventsTrackTotalHits(limit),
 		"query": map[string]interface{}{
 			"bool": map[string]interface{}{
 				"must": mustConditions,
 			},
 		},
-		"sort": []map[string]interface{}{
-			{
-				EvTimestamp: map[string]interface{}{
-					"order": sortOrder,
-				},
+		"sort": sort,
+	}
+
+	return query, nil
+}
+
+// BuildReasonFilteredEventsQuery builds an unscoped events query restricted
+// only by time range and reason: no namespace/component/environment filter.
+// Used by machine consumers (e.g. the Delivery Insights aggregator) sweeping
+// controller-emitted events across every namespace in one query.
+func (qb *QueryBuilder) BuildReasonFilteredEventsQuery(params ReasonFilteredEventsQueryParams) (map[string]interface{}, error) {
+	if params.StartTime == "" || params.EndTime == "" {
+		return nil, fmt.Errorf("start time and end time are required")
+	}
+	if len(params.Reasons) == 0 {
+		return nil, fmt.Errorf("at least one reason is required for an unscoped events sweep")
+	}
+
+	mustConditions := []map[string]interface{}{}
+	mustConditions = addEventsTimeRangeFilter(mustConditions, params.StartTime, params.EndTime)
+	mustConditions = append(mustConditions, reasonsFilter(params.Reasons))
+
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+
+	sortOrder := params.SortOrder
+	if sortOrder == "" {
+		sortOrder = "desc"
+	}
+
+	sort := eventsSort(sortOrder)
+	query := map[string]interface{}{
+		"size":             limit,
+		"track_total_hits": eventsTrackTotalHits(limit),
+		"query": map[string]interface{}{
+			"bool": map[string]interface{}{
+				"must": mustConditions,
 			},
 		},
+		"sort": sort,
 	}
 
 	return query, nil
@@ -351,7 +542,7 @@ func (qb *QueryBuilder) BuildWorkflowEventsQuery(params WorkflowEventsQueryParam
 		})
 	}
 
-	mustConditions = addTimeRangeFilter(mustConditions, params.StartTime, params.EndTime)
+	mustConditions = addEventsTimeRangeFilter(mustConditions, params.StartTime, params.EndTime)
 
 	k8sNamespace := fmt.Sprintf("workflows-%s", params.NamespaceName)
 	mustConditions = append(mustConditions, map[string]interface{}{
@@ -359,6 +550,10 @@ func (qb *QueryBuilder) BuildWorkflowEventsQuery(params WorkflowEventsQueryParam
 			EvObjectNamespace: k8sNamespace,
 		},
 	})
+
+	if filter := reasonsFilter(params.Reasons); filter != nil {
+		mustConditions = append(mustConditions, filter)
+	}
 
 	limit := params.Limit
 	if limit <= 0 {
@@ -370,20 +565,16 @@ func (qb *QueryBuilder) BuildWorkflowEventsQuery(params WorkflowEventsQueryParam
 		sortOrder = "desc"
 	}
 
+	sort := eventsSort(sortOrder)
 	query := map[string]interface{}{
-		"size": limit,
+		"size":             limit,
+		"track_total_hits": eventsTrackTotalHits(limit),
 		"query": map[string]interface{}{
 			"bool": map[string]interface{}{
 				"must": mustConditions,
 			},
 		},
-		"sort": []map[string]interface{}{
-			{
-				EvTimestamp: map[string]interface{}{
-					"order": sortOrder,
-				},
-			},
-		},
+		"sort": sort,
 	}
 
 	return query, nil
